@@ -1,0 +1,89 @@
+#pragma once
+
+#include <algorithm>
+#include <cassert>
+#include <chrono>
+#include <fstream>
+#include <functional>
+#include <iostream>
+#include <thread>
+#include <unordered_map>
+#include <vector>
+#include <openssl/rand.h>
+
+namespace util {
+
+static uint64_t timing(std::function<void()> fn) {
+    const auto start = std::chrono::high_resolution_clock::now();
+    fn();
+    const auto end = std::chrono::high_resolution_clock::now();
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
+}
+
+// Pins the current thread to core `core_id`.
+static void set_cpu_affinity(const uint32_t core_id) __attribute__((unused));
+static void set_cpu_affinity(const uint32_t core_id) {
+#ifdef __linux__
+    cpu_set_t mask;
+    CPU_ZERO(&mask);
+    CPU_SET(core_id % std::thread::hardware_concurrency(), &mask);
+    const int result =
+        pthread_setaffinity_np(pthread_self(), sizeof(mask), &mask);
+#else
+    (void)core_id;
+    std::cout << "we only support thread pinning under Linux" << std::endl;
+#endif
+}
+
+uint64_t generate_random() {
+    uint64_t value;
+    if (RAND_bytes(reinterpret_cast<unsigned char*>(&value), sizeof(value)) != 1) {
+        std::cerr << "RAND_bytes failed" << std::endl;
+        abort();
+    }
+    return value;
+}
+
+uint64_t* read_vals(const std::string& filename, uint64_t& nvals) {
+    std::ifstream in_file(filename, std::ios::binary);
+    if (!in_file) {
+        std::cerr << "Error opening file for reading: " << filename << std::endl;
+        return nullptr;
+    }
+    in_file.read(reinterpret_cast<char*>(&nvals), sizeof(nvals)); // Read the count
+    uint64_t* vals = (uint64_t*)malloc(nvals * sizeof(uint64_t));
+    if (!vals) {
+        std::cerr << "Memory allocation failed!" << std::endl;
+        return nullptr;
+    }
+    in_file.read(reinterpret_cast<char*>(vals), nvals * sizeof(uint64_t));
+    in_file.close();
+    return vals;
+}
+
+void dump_vals(const std::string& filename, const uint64_t* vals, uint64_t nvals) {
+    std::ofstream out_file(filename, std::ios::binary);
+    if (!out_file) {
+        std::cerr << "Error opening file for writing: " << filename << std::endl;
+        return;
+    }
+    out_file.write(reinterpret_cast<const char*>(&nvals), sizeof(nvals)); // Store the count
+    out_file.write(reinterpret_cast<const char*>(vals), nvals * sizeof(uint64_t));
+    out_file.close();
+}
+
+void print_progress_bar(int current, int total, int bar_width = 50) {
+    float progress = static_cast<float>(current) / total;
+    int pos = static_cast<int>(bar_width * progress);
+
+    std::cerr << "\r[";
+    for (int i = 0; i < bar_width; ++i) {
+        if (i < pos) std::cerr << "=";
+        else if (i == pos) std::cerr << ">";
+        else std::cerr << " ";
+    }
+    std::cerr << "]" << int(progress * 100.0) << "%";
+    std::cerr.flush();
+}
+
+}   // namespace util
