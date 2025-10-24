@@ -1,11 +1,11 @@
 #! /usr/bin/env bash
 
-# Experiment 6?
+# Experiment 4
 # Evaluation of Zeno filter for its multi-threaded performance with concurrent reads and writes
 
 EXE=exp_concurrent_rw
 RUN=bench/${EXE}
-FILE=exp_concurrent_rw
+FILE=exp4b
 
 mkdir -p results
 
@@ -16,11 +16,11 @@ fi
 
 cd build || exit
 
-QBITS=25
+QBITS=20
 FPLEN=16
-NEXP=1
+NEXP=4
 NTHREADS=1
-NREP=10
+NREP=1
 
 STR_INSERT="exp_concurrent_rw_insert"
 
@@ -41,7 +41,5 @@ done
 
 cd ..
 
-python3 reorder.py
-
 echo "Plotting..."
-python3 plot.py -s ${FILE} --letter 1 --filenames ${STR_INSERT} --running_average 400
+python3 plot.py -s ${FILE} --letter 2 --filenames ${STR_INSERT} --running_average 500 --individual_legend

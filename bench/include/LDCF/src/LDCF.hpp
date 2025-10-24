@@ -34,8 +34,9 @@ public:
      * Insert an item into the filter.
      * 
      * @param item The item to insert.
+     * @returns True if insertion succeeds. False if expansion fails. 
      */
-    void insert(const std::string &item);
+    bool insert(const std::string &item);
 
     /**
      * Check if an item is in the filter.
@@ -66,6 +67,15 @@ public:
      * @return The maximum number of items the filter can hold.
      */
     [[nodiscard]] std::size_t capacity() const;
+
+    uint64_t Size() const {
+        if (root) return root->Size();
+        else return 0;
+    }
+
+    void print_contents() const {
+        if (root) root->print_contents();
+    }
 
 private:
     std::size_t size_;

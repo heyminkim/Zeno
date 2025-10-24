@@ -29,6 +29,29 @@ class VZF : public Filter {
         return filter->query(key, value, zeno::kNoLock) >= 1;
     }
 
+    // Concurrency methods
+    // Yields when filter is growing
+    bool concurrent_insert_fallback(const uint64_t key) {
+        bool res = filter->insert(key, 0, 1, zeno::kWaitForLock) >= 0;
+        if (res) return res;
+        else {
+            while (filter->is_filter_growing()) {
+                std::this_thread::yield();
+            }
+            return filter->insert(key, 0, 1, zeno::kWaitForLock) >= 0;
+        }
+    }
+
+    bool concurrent_insert(const uint64_t key) {
+        bool res = filter->insert(key, 0, 1, zeno::kWaitForLock) >= 0;
+        return res;
+    }
+
+    bool concurrent_query(const uint64_t key) const {
+        uint64_t value;
+        return filter->concurrent_query(key, value, zeno::kWaitForLock) >= 1;
+    }
+
     bool remove(const uint64_t key) {
         filter->remove(key, 0, 1, zeno::kNoLock);
         return true;
@@ -58,15 +81,6 @@ class VZF : public Filter {
         if (verbose) return "VZF" + std::to_string(expansion_ratio_);
         else return "VZF";
     }
-
-    // double avg_cluster_length() const {
-    //     std::vector<uint64_t> cluster_lengths;
-    //     filter->calculate_cluster(cluster_lengths);
-
-    //     uint64_t sum = std::accumulate(cluster_lengths.begin(), cluster_lengths.end(), 0);
-    //     double avg = static_cast<double>(sum) / cluster_lengths.size();
-    //     return avg;
-    // }
 
     private:
     zeno::VZF* filter;

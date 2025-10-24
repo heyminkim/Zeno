@@ -1,8 +1,8 @@
 #define BUCKETS_PER_SEG 10
 #define MAX_CUCKOO_KICK 8
 
-#define BITS_PER_TAG 16
-#define FINGUREPRINT_MASK (0xFFFFULL)
+#define BITS_PER_TAG 14
+#define FINGUREPRINT_MASK (0x3FFFULL)
 
 #define NUM_SEG_BITS (num_table_bits_ - BUCKETS_PER_SEG)
 #define ACTV_TAG_BIT (num_table_bits_ - INIT_TABLE_BITS)

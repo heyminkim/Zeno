@@ -142,9 +142,15 @@ int main(int argc, char** argv) {
 
             if (!terminate_loop) {
                 // Insert the failed key
-                insert_time += util::timing([&]{
-                    ret = filter->insert(keys[i]);
-                });
+                ret = filter->insert(keys[i]);
+                uint64_t num_loop = 0;
+                while (!ret && num_loop < r) {
+                    total_grow_time += util::timing([&]{
+                        ret = filter->resize();
+                    });
+                    filter->insert(keys[i]);
+                    ++num_loop;
+                }
                 if (!ret) {
                     std::cerr << "failed inserting key for " << filter->name() << std::endl;
                     return false;

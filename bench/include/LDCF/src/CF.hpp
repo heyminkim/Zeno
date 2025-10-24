@@ -204,8 +204,42 @@ public:
         if (child1) child1->print_state(num_tabs + 1);
     }
 
-private:
+    uint64_t Size() const {
+        uint64_t bits_per_bucket = BUCKET_SIZE * (fingerprint_size - current_level);
+        auto bytes_per_bucket = (bits_per_bucket + 7) >> 3;
+        uint64_t total_size = number_of_buckets * bytes_per_bucket;
+        if (child0) total_size += child0->Size();
+        if (child1) total_size += child1->Size();
+        return total_size;
+    }
+
+    void print_contents() const {
+        if (accept_values) {
+            uint64_t nonzeros = 0;
+            std::cout << "printing for level " << current_level << std::endl;
+            std::cout << "numzero fingerprints : " << numzeros << std::endl;
+            for (uint64_t i = 0; i < number_of_buckets; ++i) {
+                for (int j = 0; j < BUCKET_SIZE; ++j) {
+                    auto res = buckets[i].read(j, fingerprint_size);
+                    std::cout << res << " ";
+                    if (res != 0) ++nonzeros;
+                }
+                std::cout << std::endl;
+            }
+            std::cout << "nonzeros : " << nonzeros << std::endl;
+        }
+        else {
+            std::cout << "going to child 0" << std::endl;
+            if (child0) child0->print_contents();
+            std::cout << "going to child 1" << std::endl;
+            if (child1) child1->print_contents();
+        }
+    }
+
+public:
     std::size_t number_of_buckets;
+    std::size_t hash_bits;
+    uint64_t numzeros;
     std::size_t fingerprint_size;
     std::size_t max_kicks;
     std::size_t current_size;

@@ -11,7 +11,7 @@ class Bamboo : public Filter {
     public:
     Bamboo(uint64_t exp_size, uint64_t threshold = 2) : valid(true) {
         uint32_t capacity = 1U << exp_size;
-        filter = new BambooFilter(capacity, 1);
+        filter = new BambooFilter(capacity, threshold);
     }
 
     ~Bamboo() {
@@ -51,7 +51,8 @@ class Bamboo : public Filter {
     void contract() {}
 
     uint64_t size() const {
-        return filter->Size();
+        // return filter->Size();
+        return 0;
     }
 
     std::string name(const bool verbose=false) const {

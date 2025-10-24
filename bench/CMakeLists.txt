@@ -13,31 +13,16 @@ if (HAS_MARCH_CORE_AVX2 AND HAS_MAVX2 AND HAS_MFMA)
     add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/include/bamboofilters/src)
 endif()
 
-# Include E2CF
-file(GLOB E2CF_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/include/E2CF/src/*.cpp")
-add_library(E2CF STATIC ${E2CF_SOURCES})
-target_include_directories(E2CF PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/include/E2CF/src
-    ${CMAKE_CURRENT_SOURCE_DIR}/include/E2CF
-)
-target_link_libraries(E2CF PRIVATE OpenSSL::SSL OpenSSL::Crypto)
-
 # Include LDCF
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/include/LDCF)
 
 add_executable(exp_fractional_expansion exp_fractional_expansion.cc)
+add_executable(exp_spaceamp exp_spaceamp.cc)
 add_executable(exp_inplace_expansion exp_inplace_expansion.cc)
-add_executable(exp_fe_aleph exp_fractional_expansion.cc)
-add_executable(exp_bamboo exp_bamboo.cc)
-add_executable(exp_insert_spaceamp exp_insert_spaceamp.cc)
+add_executable(exp_contract exp_contract.cc)
 add_executable(exp_concurrency exp_concurrency.cc)
 add_executable(exp_concurrent_rw exp_concurrent_rw.cc)
-add_executable(exp_stretching_overall exp_stretching_overall.cc)
-add_executable(exp_stretching_overall_niv exp_stretching_overall_niv.cc)
-add_executable(exp_fpr_writeamp exp_fpr_writeamp.cc)
-add_executable(exp_delete_size exp_delete_size.cc)
-add_executable(exp_void exp_void.cc)
-add_executable(fractional_expansion fractional_expansion.cc)
+add_executable(exp_overall exp_overall.cc)
 
 file(GLOB SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/*.cc")
 
@@ -53,23 +38,24 @@ foreach(src ${SOURCES})
     )
 
     target_link_libraries(${exe_name} PRIVATE
+        Threads::Threads
         OpenSSL::SSL
     )
 endforeach()
 
 
-target_link_libraries(exp_bamboo PRIVATE
+target_link_libraries(exp_overall PRIVATE
     OpenMP::OpenMP_CXX
     your_library    # for LDCF
-    E2CF
+    # E2CF
 )
 
 if (HAS_MARCH_CORE_AVX2 AND HAS_MAVX2 AND HAS_MFMA)
-    target_link_libraries(exp_bamboo PRIVATE
+    target_link_libraries(exp_overall PRIVATE
         header          # for bamboo filter
         hash            # for bamboo filter
     )
-    target_compile_options(exp_bamboo PRIVATE -march=core-avx2 -mavx2 -mfma)
+    target_compile_options(exp_overall PRIVATE -march=core-avx2 -mavx2 -mfma)
 endif()
 
 target_link_libraries(exp_concurrency PRIVATE Threads::Threads)

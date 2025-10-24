@@ -1,18 +1,18 @@
 #pragma once
 
 #include "base.hpp"
-#include "aleph.hpp"
+#include "infinifilter.hpp"
 
 namespace zeno_bench {
 
-class Aleph : public Filter {
+class InfiniFilter : public Filter {
     public:
-    Aleph(uint64_t exp_size, uint64_t hash_bits, double threshold=0.9) : valid(true) {
+    InfiniFilter(uint64_t exp_size, uint64_t hash_bits, double threshold=0.9) : valid(true) {
         fingerprint_bits_ = hash_bits - exp_size;
-        filter = new zeno::Aleph(exp_size, hash_bits, zeno::hashmode::Default, 0, threshold);
+        filter = new zeno::InfiniFilter(exp_size, hash_bits, zeno::hashmode::Default, 0, threshold);
     }
 
-    ~Aleph() {
+    ~InfiniFilter() {
         delete filter;
     }
 
@@ -57,8 +57,8 @@ class Aleph : public Filter {
     }
 
     std::string name(const bool verbose=false) const {
-        if (verbose) return "Aleph" + std::to_string(fingerprint_bits_);
-        else return "Aleph";
+        if (verbose) return "InfiniFilter" + std::to_string(fingerprint_bits_);
+        else return "InfiniFilter";
     }
 
     // double avg_cluster_length() const {
@@ -71,9 +71,9 @@ class Aleph : public Filter {
     // }
 
     private:
-    zeno::Aleph* filter;
+    zeno::InfiniFilter* filter;
     uint64_t fingerprint_bits_;
     bool valid;
-};  // class Aleph
+};  // class InfiniFilter
 
 }   // namespace zeno_bench

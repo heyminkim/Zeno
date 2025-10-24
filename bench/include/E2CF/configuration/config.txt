@@ -1,3 +1,0 @@
-false positive = 0.0005
-item number = 100
-input file path = ./input/input100.txt

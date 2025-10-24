@@ -42,8 +42,8 @@ public:
 
     inline void GenerateIndexTagHash(const char *item, uint32_t &seg_index, uint32_t &bucket_index, uint32_t &tag) const
     {
-        // const uint32_t hash = BOBHash::run(item, strlen(item), 3);
-        const uint32_t hash = (uint32_t)MurmurHash64A((void*)item, (int32_t)strlen(item), 0);
+        const uint32_t hash = BOBHash::run(item, strlen(item), 3);
+        // const uint32_t hash = (uint32_t)MurmurHash64A((void*)item, (int32_t)strlen(item), 0);
 
         bucket_index = BucketIndexHash(hash);
         seg_index = SegIndexHash(hash >> BUCKETS_PER_SEG);

@@ -25,10 +25,7 @@
 #include <mutex>
 #include <shared_mutex>
 #include <thread>
-
-#if defined(__x86_64__)
 #include <immintrin.h>
-#endif
 
 #include "decls.hpp"
 #include "hash.hpp"
@@ -87,8 +84,6 @@ class VZF {
      * Increases the capacity of the underlying memory. The parameters are for a potential 
      * 'dangling' hash; the hash that caused expansion will not have been inserted to the larger 
      * filter. This function handles that case. 
-     * TODO: Currently public for debugging purposes, but ideally should be 
-     * private. 
      * @param new_hash The 'dangling' hash to be inserted in the larger filter
      * @param new_count The count of `new_hash`
      * @param flags The original flag used for insertion. 
@@ -149,7 +144,7 @@ class VZF {
         return metadata_->hash_bits;
     }
     uint64_t get_memory_usage() const {
-        return metadata_->vmem_size_ + sizeof(qfmetadata);
+        return metadata_->vmem_size_; // + sizeof(qfmetadata);
     }
     double get_space_amplification() const {
         return metadata_->space_amplification_;
@@ -172,31 +167,7 @@ class VZF {
 
     inline
     uint64_t get_index_block_size() const {
-#if defined(RARRAY)
-        return index_block_.size();
-#else
         return 0;
-#endif
-    }
-
-    inline
-    void check_empty() const {
-        for (uint64_t i = 0; i < metadata_->xnslots; ++i) {
-            qfblock* qb = get_block(i / kSlotsPerBlock);
-            // assert(qb->offset == 0);
-            // assert(qb->occupieds[0] == 0);
-            // assert(qb->runends[0] == 0);
-            uint64_t* p = reinterpret_cast<uint64_t*>(&get_block(i / kSlotsPerBlock)->
-                          slots[(i % kSlotsPerBlock) * metadata_->bits_per_slot / 8]);
-            uint64_t t;
-            memcpy(&t, p, sizeof(t));
-            uint64_t occ;
-            memcpy(&occ, qb->occupieds, sizeof(uint64_t));
-            if (occ & (1ULL << (i % kSlotsPerBlock))) {
-                print_by_index(i);
-            }
-        }
-        std::cout << "emptiness checked" << std::endl;
     }
 
     void print_by_index(uint64_t index) const {
@@ -454,8 +425,6 @@ class VZF {
         uint64_t ndistinct_elts;
         uint64_t noccupied_slots;
         double expansion_threshold;
-        /* For debugging. */
-        uint64_t num_expansions;
         PartitionedCounter pc_noccupied_slots;
         /* Size of a qfblock in bytes. */
         uint64_t qfblock_size;
@@ -850,24 +819,8 @@ class VZF {
      * @returns The pointer to the target qf block. 
      */
     qfblock* get_block(const uint64_t block_index) const {
-#if defined(RARRAY)
-        uint64_t datablock_index = (block_index >> kUnitOffsetBits) + 1;
-                
-        uint64_t k = 63ULL - __builtin_clzll(datablock_index);
-        uint64_t floor_k = (k >> 1), mask_up = (1ULL << floor_k) - 1;
-        uint64_t ceil_k = ((k + 1) >> 1), mask_low = (1ULL << ceil_k) - 1;
-        uint64_t off = ((datablock_index & mask_low) << kUnitOffsetBits) + 
-                    (block_index & BITMASK(kUnitOffsetBits));
-
-        qfblock* qb_ptr = index_block_[calculate_A(k) + ((datablock_index >> ceil_k) & mask_up)];
-        qfblock* qb = (qfblock*)(((char*)qb_ptr) + off * 
-                                 (sizeof(qfblock) + kSlotsPerBlock * metadata_->bits_per_slot / 8));
-
-        return qb;
-#else
         return (qfblock *)(((char *)blocks_) + block_index * (sizeof(qfblock) + kSlotsPerBlock *
                                                               metadata_->bits_per_slot / 8));
-#endif        
     }
 
     void set_slot(const uint64_t& index, const uint64_t& value);
@@ -878,22 +831,6 @@ class VZF {
     int32_t offset_lower_bound(const uint64_t& slot_index) const;
     uint64_t find_first_empty_slot(uint64_t from) const;
     void shift_remainders(const uint64_t& start_index, const uint64_t& empty_index);
-
-    uint64_t count_set_bits(bool occ) const {
-        uint64_t num_set_bits = 0;
-        if (occ) {
-            for (uint64_t i = 0; i < metadata_->nblocks; ++i) {
-                uint64_t occupieds = get_block(i)->occupieds[0];
-                num_set_bits += std::popcount(occupieds);
-            }
-        } else {
-            for (uint64_t i = 0; i < metadata_->nblocks; ++i) {
-                uint64_t runends = get_block(i)->runends[0];
-                num_set_bits += std::popcount(runends);
-            }
-        }
-        return num_set_bits;
-    }
 
     /**
      * Calculates the run end of a given entry. This is a thread-safe implementation; it locks the
@@ -1011,10 +948,16 @@ class VZF {
         int unary_count = __builtin_clzll((~f) << (64 - metadata_->fingerprint_bits)) + 1;
         uint64_t old_fp_len = metadata_->fingerprint_bits - unary_count;
         uint64_t parity = q & 1;
-        uint64_t unary = (BITMASK(unary_count - 2) << 2) | parity;
-        f = (unary << old_fp_len) | (f & BITMASK(old_fp_len));
-        q >>= 1;
-
+        if (unary_count == 1) {
+            uint64_t unary = parity;
+            f = (unary << old_fp_len) | (f & BITMASK(old_fp_len));
+            f >>= 1;
+            q >>= 1;
+        } else {
+            uint64_t unary = (BITMASK(unary_count - 2) << 2) | parity;
+            f = (unary << old_fp_len) | (f & BITMASK(old_fp_len));
+            q >>= 1;
+        }
         return (q << metadata_->fingerprint_bits) | f;
     }
 
@@ -1371,7 +1314,6 @@ VZF::VZF(uint64_t exp_size, uint64_t hash_bits, uint64_t value_bits,
     metadata_->noccupied_slots = 0;
     metadata_->qfblock_size = qfblock_size;
     metadata_->expansion_threshold = threshold;
-    metadata_->num_expansions = 0;
 
 #if defined(WIDENING)
     metadata_->num_expansions = 0;
@@ -1457,7 +1399,9 @@ int VZF::insert(uint64_t key, uint64_t value, uint64_t count, uint8_t flags) {
 
             if (GET_NO_LOCK(flags) == kNoLock && GET_IS_FILTER_GROWING(flags) != kIsFilterGrowing) {
                 grow_ret = grow(0, 0, flags);
-            } else {
+            // The change may cause errors in concurrency
+            // else {
+            } else if (GET_NO_LOCK(flags) != kNoLock && GET_IS_FILTER_GROWING(flags) != kIsFilterGrowing) {
                 int64_t expected_region = -1;
                 int64_t max_region = (metadata_->nslots - 1) / kNumSlotsToLock;
                 // We were the first one to trigger grow
@@ -1564,6 +1508,13 @@ int32_t VZF::remove(uint64_t key, uint64_t value, uint64_t count,
         ret = remove_longest_internal(hash, count, flags);
         if (ret < 0) return ret;
     }
+    if (count_occupied_slots() <= metadata_->nslots * metadata_->expansion_threshold * 0.5) {
+        if (metadata_->auto_resize) {
+            this->contract();
+        } else {
+            return -1;
+        }
+    }
     return ret;
 }
 
@@ -1660,16 +1611,14 @@ int64_t VZF::grow(uint64_t dangling_hash, uint64_t dangling_count, uint8_t flags
         metadata_->qfblock_size = new_qfblock_size;
     }
 #endif
+    iterator<VZF> it;
     // mmap implementation
     if (GET_NO_LOCK(flags) != kNoLock) {
         // Write-lock the spinlock array, blocking future operations that reference the spin lock.
         runtimedata_->resize_pending.store(true, std::memory_order_release);
 
-        // print_lock_status();
-
         for (uint64_t l = 0; l < runtimedata_->num_locks; ++l) {
             while (runtimedata_->locks[l].lock_.lock_.load(std::memory_order_acquire)) {
-                // print_lock_status();
                 std::this_thread::yield();
             }
         }
@@ -1701,18 +1650,9 @@ int64_t VZF::grow(uint64_t dangling_hash, uint64_t dangling_count, uint8_t flags
         } else {
             memset((uint8_t*)blocks_ + metadata_->vmem_size_, 0, new_vmem_size - metadata_->vmem_size_);
         }
-
-        // qfblock* tmp_addr = blocks_;
-        // blocks_ = (qfblock*)realloc(blocks_, new_vmem_size);
-        // if (blocks_ == nullptr) {
-        //     std::cerr << "realloc failed for expansion." << std::endl;
-        //     free(tmp_addr);
-        //     abort();
-        // } else {
-        //     memset((uint8_t*)blocks_ + metadata_->vmem_size_, 0, new_vmem_size - metadata_->vmem_size_);
-        // }
-
-        // std::cout << "new blocks address : " << blocks_ << std::endl;
+        
+        // Initialize iterator before unlocking
+        it = iterator<VZF>(this, kMaxPosition);
 
         uint64_t old_nslots = metadata_->nslots;
         metadata_->space_amplification_ = ((double)new_vmem_size) / ((double)metadata_->vmem_size_);
@@ -1720,9 +1660,6 @@ int64_t VZF::grow(uint64_t dangling_hash, uint64_t dangling_count, uint8_t flags
         metadata_->nslots = next_nslots;
         metadata_->xnslots = next_xnslots;
         metadata_->nblocks = next_nblocks;
-
-        // Unlock the spinlock mutex
-        runtimedata_->resize_pending.store(false, std::memory_order_release);
 
         // Preemptively lock the last region to the runend for the expansion thread to read from.
         // No need to lock because this block of code is guarded by the spinlock mutex.
@@ -1741,6 +1678,9 @@ int64_t VZF::grow(uint64_t dangling_hash, uint64_t dangling_count, uint8_t flags
                 return kErrCouldntLock;
             }
         }
+
+        // Unlock the spinlock mutex
+        runtimedata_->resize_pending.store(false, std::memory_order_release);
     } else {
         int rm_flags = MREMAP_MAYMOVE;
         blocks_ = (qfblock*)mremap(blocks_, metadata_->vmem_size_, new_vmem_size, rm_flags);
@@ -1750,6 +1690,9 @@ int64_t VZF::grow(uint64_t dangling_hash, uint64_t dangling_count, uint8_t flags
         } else {
             memset((uint8_t*)blocks_ + metadata_->vmem_size_, 0, new_vmem_size - metadata_->vmem_size_);
         }
+        
+        // Initialize iterator before unlocking
+        it = iterator<VZF>(this, kMaxPosition);
 
         metadata_->space_amplification_ = ((double)new_vmem_size) / ((double)metadata_->vmem_size_);
         metadata_->vmem_size_ = new_vmem_size;
@@ -1757,16 +1700,6 @@ int64_t VZF::grow(uint64_t dangling_hash, uint64_t dangling_count, uint8_t flags
         metadata_->xnslots = next_xnslots;
         metadata_->nblocks = (metadata_->xnslots + kSlotsPerBlock - 1) / kSlotsPerBlock;
     }
-    // malloc implementation
-    // qfblock* tmp_addr = blocks_;
-    // blocks_ = (qfblock*)realloc(blocks_, new_vmem_size);
-    // if (blocks_ == nullptr) {
-    //     std::cerr << "realloc failed for expansion." << std::endl;
-    //     abort();
-    // } else {
-    //     // Zero out the newly allocated region
-    //     memset((uint8_t*)blocks_ + metadata_->vmem_size_, 0, new_vmem_size - metadata_->vmem_size_);
-    // }
 
     uint64_t fingerprint, value, count, quotient, new_hash, canonical_slot;
     int64_t ret_numkeys = 0;
@@ -1853,7 +1786,7 @@ int64_t VZF::grow(uint64_t dangling_hash, uint64_t dangling_count, uint8_t flags
         int deleted_void_seq_num = 0;
 
         // Iterate through the filter and move items
-        iterator<VZF> it(this, kMaxPosition);
+        // iterator<VZF> it(this, kMaxPosition);
         if (GET_NO_LOCK(flags) == kNoLock) {
             it.disable_region();
         }
@@ -1899,6 +1832,10 @@ int64_t VZF::grow(uint64_t dangling_hash, uint64_t dangling_count, uint8_t flags
         // The updated write_region_second.
         int64_t new_write_region_second = write_region_first;
 
+        // Queue for buffering void sequence inserts. Actual inserts are done after --it. 
+        // Format: [first index, last index, count]
+        std::deque<uint64_t> void_seq_to_insert;
+
         // Main loop for deleting existing entries and reinserting them to the larger filter
         do {
             // Potentially lock the reading region
@@ -1918,35 +1855,20 @@ int64_t VZF::grow(uint64_t dangling_hash, uint64_t dangling_count, uint8_t flags
                         --write_region_first;
 
                         runtimedata_->resizing_region.store(new_region, std::memory_order_release);
-                        // std::cout << "(1) trying to acquire read lock...";
-                        // auto startt = std::chrono::high_resolution_clock::now();
-                        // lock from new_region to read_region_second
+                        
                         for (auto r = new_region; r <= read_region_second; ++r) {
                             if (!zeno_lock_region(r, kWaitForLock)) {
                                 return kErrCouldntLock;
                             }
                         }
-                        // auto end = std::chrono::high_resolution_clock::now();
-                        // auto wait_time_us = std::chrono::duration_cast<std::chrono::nanoseconds>(end - startt).count();
-                        // std::cout << " took " << wait_time_us << " nanoseconds." << std::endl;
-                        // runtimedata_->total_grow_time += wait_time_us;
 
-                        // std::cout << "(2) trying to acquire write lock...";
-                        // startt = std::chrono::high_resolution_clock::now();
                         for (auto r = write_region_first; r <= write_region_second; ++r) {
                             if (r <= read_region_second) continue;
                             if (!zeno_lock_region(r, kWaitForLock)) {
                                 return kErrCouldntLock;
                             }
                         }
-                        // end = std::chrono::high_resolution_clock::now();
-                        // wait_time_us = std::chrono::duration_cast<std::chrono::nanoseconds>(end - startt).count();
-                        // std::cout << " took " << wait_time_us << " nanoseconds." << std::endl;
-                        // runtimedata_->total_grow_time += wait_time_us;
-
                         read_region_first = new_region;
-                        // std::cout << " (e) read  lock updated to " << read_region_first << std::endl;
-                        // std::cout << " (e) write lock updated to " << write_region_first << std::endl;
                     }
                     if (it.is_valid()) {
                         if (!it.get_last_canonical_slot(it.current_block_)) {
@@ -1971,15 +1893,11 @@ int64_t VZF::grow(uint64_t dangling_hash, uint64_t dangling_count, uint8_t flags
                         zeno_unlock_region(r);
                     }
                     read_region_second = new_last_read_region;
-                    // runtimedata_->resizing_region_upper.store(read_region_second, 
-                    //                                           std::memory_order_release);
-                    // std::cout << " (d) read end updated to " << read_region_second << std::endl;
                 }
             }
 
             status = it.get_entry(fingerprint, value, count);
-            // if (it.canonical_slot_ < 100) std::cout << "cs : " << it.canonical_slot_ << std::endl;
-
+            
             // Delete the entry from the filter first
             original_hash = canonical_slot << metadata_->fingerprint_bits | fingerprint;
 #if defined(WIDENING)
@@ -1991,11 +1909,9 @@ int64_t VZF::grow(uint64_t dangling_hash, uint64_t dangling_count, uint8_t flags
                 }
             } else {
                 if (!delete_key_value(original_hash, value, kNoLock | kKeyIsHash)) {
-                    // TODO: fix error code
                     return -1;
                 }
             }
-            // TODO: maybe erase?
             bool slot_is_occupied = is_occupied(canonical_slot);
 
 #else
@@ -2036,8 +1952,6 @@ int64_t VZF::grow(uint64_t dangling_hash, uint64_t dangling_count, uint8_t flags
                             write_region_second = new_write_region_second;
                             prev_cluster_start_index = 0;
                         }
-                        // std::cout << "(3) trying to acquire write lock...";
-                        // auto startt = std::chrono::high_resolution_clock::now();
                         for (auto r = write_region_first; r <= write_region_second; ++r) {
                             if (r <= read_region_second) continue;
                             if (!zeno_lock_region(r, kWaitForLock)) {
@@ -2049,11 +1963,6 @@ int64_t VZF::grow(uint64_t dangling_hash, uint64_t dangling_count, uint8_t flags
                             runtimedata_->resizing_region_upper.store(write_region_second, 
                                                                       std::memory_order_release);
                         }
-                        // auto end = std::chrono::high_resolution_clock::now();
-                        // auto wait_time_us = std::chrono::duration_cast<std::chrono::nanoseconds>(end - startt).count();
-                        // std::cout << " took " << wait_time_us << " nanoseconds." << std::endl;
-                        // runtimedata_->total_grow_time += wait_time_us;
-                        // std::cout << " (w) write lock updated to " << write_region_first << std::endl;
                     }
                 }
 
@@ -2068,47 +1977,7 @@ int64_t VZF::grow(uint64_t dangling_hash, uint64_t dangling_count, uint8_t flags
             metadata_->bits_per_slot = metadata_->fingerprint_bits + metadata_->value_bits;
             metadata_->quotient_bits += 1;
             metadata_->hash_bits = metadata_->quotient_bits + metadata_->fingerprint_bits;
-
-#if defined(RARRAY)
-
-            uint64_t block_index = slot_runend / kSlotsPerBlock;
-            uint64_t datablock_index = (block_index >> kUnitOffsetBits) + 1;
-            uint64_t k = 63ULL - __builtin_clzll(datablock_index);
-            uint64_t floor_k = (k >> 1), mask_up = (1ULL << floor_k) - 1;
-            uint64_t ceil_k = ((k + 1) >> 1);
-            uint64_t directory_index = calculate_A(k) + ((datablock_index >> ceil_k) & mask_up);
-
-            /**
-             * Reallocation of a new data block under RARRAY happens under three conditions:
-             * 1. The data block that the iterator encounters in this loop is different from the one
-             * that was previously seen. Specifically, because the runend might spill over to the 
-             * next data block, we check if the runend of the run is located at a new data block.
-             * 2. The slot is not occupied (i.e., the run is completely removed)
-             * 3. directory_index is not 0, because we have already reallocated a larger data block.
-             */
-            if (static_cast<int64_t>(directory_index) < expanding_block_index 
-                /* targeting an entry from a new data block */
-                && !slot_is_occupied /* completely removed the run */
-                && directory_index != 0 /* first data block is already reallocated */) {
-                datablock_index += 1;   /* Next datablock we want to reallocate */
-                k = 63ULL - __builtin_clzll(datablock_index);
-                floor_k = (k >> 1), mask_up = (1ULL << floor_k) - 1;
-                ceil_k = ((k + 1) >> 1);
-                directory_index = calculate_A(k) + ((datablock_index >> ceil_k) & mask_up);
-
-                qfblock* qb_realloc = index_block_[directory_index];
-                delete[] qb_realloc;
-                uint8_t* qb_realloc_buffer = new uint8_t[metadata_->qfblock_size * 
-                                                        ((1ULL << ceil_k) << kUnitOffsetBits)]{};
-                qb_realloc = reinterpret_cast<qfblock*>(qb_realloc_buffer);
-                index_block_[directory_index] = qb_realloc;
-                --expanding_block_index;
-            }
 #endif
-#endif
-            // Queue for buffering void sequence inserts. Actual inserts are done after --it. 
-            // Format: [first index, last index, count]
-            std::deque<uint64_t> void_seq_to_insert;
 
             // Encountered an A sequence. This is either a start of a void seq
             // or an end of a void seq. 
@@ -2131,7 +2000,6 @@ int64_t VZF::grow(uint64_t dangling_hash, uint64_t dangling_count, uint8_t flags
                 // intermediate B from a gen N sequence or an added delimiter for deleted As. 
                 if (it.is_occupied()) {
                     status = it.get_entry(fingerprint, value, count);
-                    assert(fingerprint == B);
                     original_count_B = count;
                     // Number of deleted As
                     uint64_t deleted_count_A = 0;
@@ -2324,6 +2192,20 @@ int64_t VZF::grow(uint64_t dangling_hash, uint64_t dangling_count, uint8_t flags
                     zero_buffer.push_back(ZeroBufferEntry(new_hash, count, value));
                 }
             }
+            /**
+             * Insert the buffered void sequences in the queue
+             */
+            if (quotient != 0) {
+                while (!void_seq_to_insert.empty()) {
+                    uint64_t start_quotient = void_seq_to_insert.front();
+                    void_seq_to_insert.pop_front();
+                    uint64_t end_quotient = void_seq_to_insert.front();
+                    void_seq_to_insert.pop_front();
+                    uint64_t count = void_seq_to_insert.front();
+                    void_seq_to_insert.pop_front();
+                    insert_void_sequence(start_quotient, end_quotient, count, kNoLock);
+                }
+            }
 
 #if defined(WIDENING)
             // Switch back to original fingerprint length and corresponding metadata
@@ -2333,18 +2215,6 @@ int64_t VZF::grow(uint64_t dangling_hash, uint64_t dangling_count, uint8_t flags
             metadata_->hash_bits = metadata_->quotient_bits + metadata_->fingerprint_bits;
 #endif
             --it;
-            /**
-             * Insert the buffered void sequences in the queue
-             */
-            while (!void_seq_to_insert.empty()) {
-                uint64_t start_quotient = void_seq_to_insert.front();
-                void_seq_to_insert.pop_front();
-                uint64_t end_quotient = void_seq_to_insert.front();
-                void_seq_to_insert.pop_front();
-                uint64_t count = void_seq_to_insert.front();
-                void_seq_to_insert.pop_front();
-                insert_void_sequence(start_quotient, end_quotient, count, kNoLock);
-            }
             /**
              * The iterator gets marked as `new_region` when it reaches a new locking region. This
              * is because with concurrency, it is not thread safe to read the canonical slot of a 
@@ -2385,14 +2255,24 @@ int64_t VZF::grow(uint64_t dangling_hash, uint64_t dangling_count, uint8_t flags
         metadata_->hash_bits = metadata_->quotient_bits + metadata_->fingerprint_bits;
 #endif
 
+        while (!void_seq_to_insert.empty()) {
+            uint64_t start_quotient = void_seq_to_insert.front();
+            void_seq_to_insert.pop_front();
+            uint64_t end_quotient = void_seq_to_insert.front();
+            void_seq_to_insert.pop_front();
+            uint64_t count = void_seq_to_insert.front();
+            void_seq_to_insert.pop_front();
+            insert_void_sequence(start_quotient, end_quotient, count, kNoLock);
+        }
+
         // Insert the buffered zero-indexed entries to the filter. 
         for (auto new_hash : zero_buffer) {
             int ret;
             if (new_hash.hash == B) {
-                ret = insert(B, 0, new_hash.count, kNoLock | kKeyIsHash);
-                ret = insert(A, 0, new_hash.count, kNoLock | kKeyIsHash);
+                ret = insert(B, 0, new_hash.count, kNoLock | kKeyIsHash | kIsFilterGrowing);
+                ret = insert(A, 0, new_hash.count, kNoLock | kKeyIsHash | kIsFilterGrowing);
             } else {
-                ret = insert(new_hash.hash, new_hash.value, new_hash.count, kNoLock | kKeyIsHash);
+                ret = insert(new_hash.hash, new_hash.value, new_hash.count, kNoLock | kKeyIsHash | kIsFilterGrowing);
             }
             if (ret < 0) {
                 std::cerr << "Failed to insert key: " << new_hash.hash << " into the new filter." 
@@ -2420,7 +2300,7 @@ int64_t VZF::grow(uint64_t dangling_hash, uint64_t dangling_count, uint8_t flags
     // Expansion within an epoch. 
     } else {
         // Iterate through the filter and move items
-        iterator it(this, kMaxPosition);
+        // iterator it(this, kMaxPosition);
         if (!it.is_valid()) return 0;
         canonical_slot = it.get_canonical_slot();
         uint64_t run_length;
@@ -2469,7 +2349,7 @@ int64_t VZF::grow(uint64_t dangling_hash, uint64_t dangling_count, uint8_t flags
             new_hash = quotient << metadata_->fingerprint_bits | fingerprint;
         }
 
-        int ret = insert(new_hash, value, count, kNoLock | kKeyIsHash);
+        int ret = insert(new_hash, value, count, kNoLock | kKeyIsHash | kIsFilterGrowing);
         if (ret < 0) {
             std::cerr << "Failed to insert key: " << new_hash << " into the new filter." << std::endl;
             return ret;
@@ -2560,6 +2440,7 @@ int64_t VZF::contract() {
     // Main loop for moving entries over to the smaller filter
     do {
         status = it.get_entry(fingerprint, value, count);
+        uint64_t saved_fingerprint = fingerprint;
         original_hash = canonical_slot << metadata_->fingerprint_bits | fingerprint;
         int this_encoding_length = delete_key_value(original_hash, value, kNoLock | kKeyIsHash);
         if (this_encoding_length < 0) {
@@ -2722,11 +2603,13 @@ int64_t VZF::contract() {
                 }
             }
         } else {
+            uint64_t saved_quotient = quotient;
             new_hash = extend_fingerprint_length(quotient, fingerprint);
             // If new index is not zero, insert normally
             if (new_hash >> metadata_->bits_per_slot) {
                 ret = new_filter.insert(new_hash, value, count, kNoLock | kKeyIsHash);
                 if (ret < 0) {
+                    std::cerr <<"y";
                     std::cerr << "Failed to insert key: " << new_hash << " into the new filter." 
                                 << std::endl;
                     return ret;
@@ -2887,7 +2770,6 @@ uint64_t VZF::concurrent_query(uint64_t key, uint64_t& value, uint8_t flags) {
         if (count == 0 && runtimedata_->resizing_region.load(std::memory_order_acquire) >= 0) {
             // query again
             key = original_key >> (64ULL - metadata_->hash_bits - 1);
-            // count = query(key, value, kWaitForLock | kKeyIsHash | kSecondTryLock);
             return count;
         } else {
             return count;
@@ -3040,7 +2922,6 @@ int VZF::insert1(uint64_t hash, uint8_t flags) {
                 operation = 1;
                 insert_index = runstart_index;
                 new_value = hash_remainder;
-                // modify_metadata(&metadata_->ndistinct_elts, 1);
 
             /* This is the first time we're inserting this remainder, but
                 there are larger remainders already in the run. */
@@ -3048,7 +2929,6 @@ int VZF::insert1(uint64_t hash, uint8_t flags) {
                 operation = 2; /* Inserting */
                 insert_index = runstart_index;
                 new_value = hash_remainder;
-                // modify_metadata(&metadata_->ndistinct_elts, 1);
 
             /* Cases below here: we're incrementing the (simple or
                 extended) counter for this remainder. */
@@ -3136,7 +3016,6 @@ int VZF::insert1(uint64_t hash, uint8_t flags) {
                 }
             }
         } else {
-            // modify_metadata(&metadata_->ndistinct_elts, 1);
         }
 
         if (operation >= 0) {
@@ -3177,10 +3056,8 @@ int VZF::insert1(uint64_t hash, uint8_t flags) {
                     get_block(i)->offset++;
                 assert(get_block(i)->offset != 0);
             }
-            // modify_metadata(&metadata_->noccupied_slots, 1);
             modify_metadata(metadata_->pc_noccupied_slots, 1);
         }
-        // modify_metadata(&metadata_->nelts, 1);
         METADATA_WORD(occupieds, hash_bucket_index) |= 1ULL << (hash_bucket_block_offset % 64);
     }
 
@@ -3214,10 +3091,7 @@ int VZF::insertN(uint64_t hash, uint64_t count, uint8_t flags) {
         METADATA_WORD(runends, hash_bucket_index) |= 1ULL << (hash_bucket_block_offset % 64);
         set_slot(hash_bucket_index, hash_remainder);
         METADATA_WORD(occupieds, hash_bucket_index) |= 1ULL << (hash_bucket_block_offset % 64);
-        
-        // modify_metadata(&metadata_->ndistinct_elts, 1);
-        // modify_metadata(&metadata_->noccupied_slots, 1);
-        // modify_metadata(&metadata_->nelts, 1);
+
         modify_metadata(metadata_->pc_noccupied_slots, 1);
         if (count > 1) {
             insertN(hash, count - 1, kNoLock);
@@ -3239,7 +3113,6 @@ int VZF::insertN(uint64_t hash, uint64_t count, uint8_t flags) {
                                     &new_values[67] - p, 
                                     0);
             if (!ret) return kErrNoSpace;
-            // modify_metadata(&metadata_->ndistinct_elts, 1);
             ret_distance = runstart_index - hash_bucket_index;
         } else { /* Non-empty bucket */
 
@@ -3264,7 +3137,6 @@ int VZF::insertN(uint64_t hash, uint64_t count, uint8_t flags) {
                                         0);
                 if (!ret)
                     return kErrNoSpace;
-                // modify_metadata(&metadata_->ndistinct_elts, 1);
                 ret_distance = (current_end + 1) - hash_bucket_index;
                 /* Found a counter for this remainder.  Add in the new count. */
             } else if (current_remainder == hash_remainder) {
@@ -3292,13 +3164,10 @@ int VZF::insertN(uint64_t hash, uint64_t count, uint8_t flags) {
                                         0);
                 if (!ret)
                     return kErrNoSpace;
-                // modify_metadata(&metadata_->ndistinct_elts, 1);
             ret_distance = runstart_index - hash_bucket_index;
             }
         }
         METADATA_WORD(occupieds, hash_bucket_index) |= 1ULL << (hash_bucket_block_offset % 64);
-        
-        // modify_metadata(&metadata_->nelts, count);
     }
 
     if (GET_NO_LOCK(flags) != kNoLock) {
@@ -3326,7 +3195,7 @@ int VZF::insert_void_sequence(uint64_t begin, uint64_t end, uint64_t count, uint
         int64_t runstart_index = begin == 0
                                ? 0
                                : run_end(begin - 1) + 1;
-        bool ret;
+        int ret = 0;
 
         // Empty bucket. Because we are scanning right to left, if a slot has
         // its is_occupied bit not set, we are guaranteed that the slot does not
@@ -3334,7 +3203,7 @@ int VZF::insert_void_sequence(uint64_t begin, uint64_t end, uint64_t count, uint
         if (!is_occupied(begin)) {
             ret = insert1((begin << metadata_->fingerprint_bits) | A, kNoLock | kKeyIsHash);
             if (ret < 0) return kErrNoSpace;
-            ret = insertN((begin << metadata_->fingerprint_bits) | B, count, kNoLock | kKeyIsHash);
+            ret += insertN((begin << metadata_->fingerprint_bits) | B, count, kNoLock | kKeyIsHash);
             if (ret < 0) return kErrNoSpace;
             // TODO: increase metadata for number of void entries
         } else {
@@ -3386,8 +3255,6 @@ int VZF::insert_void_sequence(uint64_t begin, uint64_t end, uint64_t count, uint
                                         &new_values[67] - p,
                                         0);
             }
-            
-            
         }
     
     // Inserting gen N (N>1) void sequence. Encoding: [A][B]..[B][A]
@@ -3399,7 +3266,7 @@ int VZF::insert_void_sequence(uint64_t begin, uint64_t end, uint64_t count, uint
             }
         }
 
-        bool ret;
+        int ret = 0;
         uint64_t runstart_index = begin == 0
                                 ? 0
                                 : run_end(begin - 1) + 1;
@@ -3408,11 +3275,10 @@ int VZF::insert_void_sequence(uint64_t begin, uint64_t end, uint64_t count, uint
         ret = insert_A_internal(begin, runstart_index, count);
         runstart_index = run_end(begin) + 1;
         for (uint64_t i = begin + 1; i < end; ++i) {
-            ret = insert_B_internal(i, runstart_index, count);
+            ret += insert_B_internal(i, runstart_index, count);
             runstart_index = run_end(i) + 1;
         }
-        ret = insert_A_internal(end, runstart_index, count);
-
+        ret += insert_A_internal(end, runstart_index, count);
     }
 
     return 0;
@@ -3425,7 +3291,7 @@ int VZF::insert_A_internal(uint64_t& hash_index, uint64_t& runstart_index, uint6
     uint64_t B = A - 1;
     
     uint64_t new_values[67];
-    bool ret;
+    int ret = 0;
     if (!is_occupied(hash_index)) {
         if (count == 1) {
             return insert1((hash_index << metadata_->fingerprint_bits) | A, kNoLock | kKeyIsHash);
@@ -3508,7 +3374,7 @@ int VZF::insert_B_internal(uint64_t& hash_index, uint64_t& runstart_index, uint6
     uint64_t B = A - 1;
 
     uint64_t new_values[67];
-    bool ret;
+    int ret = 0;
     if (!is_occupied(hash_index)) {
         if (count == 1) {
             return insert1((hash_index << metadata_->fingerprint_bits) | B, kNoLock | kKeyIsHash);
@@ -3871,10 +3737,6 @@ int VZF::remove_longest_internal(uint64_t hash, uint64_t &count,
     } else {
         ret_numfreedslots = -1;
     }
-    
-
-    // update the nelements.
-    // modify_metadata(&qf->runtimedata->pc_nelts, -count);
 
     if (GET_NO_LOCK(runtime_lock) != kNoLock) {
         zeno_unlock(hash_bucket_index, /*small*/ false);
@@ -3929,9 +3791,6 @@ inline int VZF::remove_internal(uint64_t hash, uint64_t count, uint8_t runtime_l
                                             p,
                                             &new_values[67] - p,
                                             current_end - runstart_index + 1);
-
-    // update the nelements.
-    // modify_metadata(&qf->runtimedata->pc_nelts, -count);
 
     if (GET_NO_LOCK(runtime_lock) != kNoLock) {
         zeno_unlock(hash_bucket_index, /*small*/ false);
@@ -4215,7 +4074,6 @@ inline int VZF::run_end_threadsafe(const uint64_t& hash_bucket_index, uint64_t& 
     // Overflowed to next qfblock. Is this a new region?
     int64_t last_region_to_lock = runend_block_index * kSlotsPerBlock / kNumSlotsToLock;
     if (last_region_to_lock > current_locked_region) {
-        // if (!zeno_lock_region(last_region_to_lock, flags)) {
         if (!zeno_lock_region_conditionally(last_region_to_lock, flags)) {
             return kErrCouldntLock;
         }
@@ -4518,7 +4376,6 @@ bool VZF::shift_for_inserts(int operation,
         set_slot(overwrite_index + i, remainders[i]); 
     }
 
-    // modify_metadata(&metadata_->noccupied_slots, ninserts);
     modify_metadata(metadata_->pc_noccupied_slots, ninserts);
 
     return true;
@@ -4615,13 +4472,7 @@ int VZF::shift_for_deletes(int operation,
     }
 
     int num_slots_freed = old_length - total_remainders;
-    // modify_metadata(&metadata_->noccupied_slots, - num_slots_freed);
     modify_metadata(metadata_->pc_noccupied_slots, - num_slots_freed);
-    /*qf->metadata->noccupied_slots -= (old_length - total_remainders);*/
-    if (!total_remainders) {
-        // modify_metadata(&metadata_->ndistinct_elts, -1);
-        /*qf->metadata->ndistinct_elts--;*/
-    }
 
     return ret_current_distance;
 }

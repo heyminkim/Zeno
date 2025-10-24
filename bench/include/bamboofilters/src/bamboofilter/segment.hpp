@@ -1,6 +1,4 @@
-#if defined(__x86_64__)
 #include <immintrin.h>
-#endif
 #include <stdint.h>
 #include <stdlib.h>
 
@@ -19,8 +17,9 @@ private:
     static const uint32_t kBytesPerBucket = (BITS_PER_TAG * kTagsPerBucket + 7) >> 3;
 
     static const uint32_t kTagMask = (1ULL << BITS_PER_TAG) - 1;
-    static const uint64_t kBucketMask = (BITS_PER_TAG == 16) ? 0xFFFFFFFFFFFFFFFFULL :
-    (1ULL << (BITS_PER_TAG * kTagsPerBucket)) - 1;
+    static const uint64_t kBitsPerBucket = BITS_PER_TAG * kTagsPerBucket;
+    static const uint64_t kBucketMask = kBitsPerBucket == 64 ? 0XFFFFFFFFFFFFFFFF :
+                                        (1ULL << (BITS_PER_TAG * kTagsPerBucket)) - 1;
 
     static const uint32_t bucket_size = (BITS_PER_TAG * kTagsPerBucket + 7) / 8; // kBytesPerBucket
     static const uint32_t safe_pad = sizeof(uint64_t) - bucket_size;
@@ -66,12 +65,6 @@ private:
         p += idx + (idx >> 1);
         tag = *((uint16_t *)p) >> ((idx & 1) << 2);
         return tag & kTagMask;
-    }
-
-    static bool LookupTag(const char *p, uint32_t tag)
-    {
-        uint64_t v = *((uint64_t *)p);
-        return hasvalue12(v, tag);
     }
 
     static bool RemoveOnCondition(const char *p, uint32_t idx, uint32_t old_tag)

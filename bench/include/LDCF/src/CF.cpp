@@ -6,6 +6,7 @@
 #include <string>
 #include <cstring>
 #include <iostream>
+#include <malloc.h>
 
 #include  "CF.hpp"
 
@@ -15,6 +16,7 @@ namespace baseline_LDCF {
 CuckooFilter::CuckooFilter(std::size_t number_of_buckets, std::size_t fingerprint_size, int current_level, uint32_t common_bits):
     child0(nullptr), child1(nullptr), number_of_buckets(nextPowerOfTwo(number_of_buckets)), fingerprint_size(fingerprint_size), 
     current_size(0), accept_values(true), current_level(current_level), common_bits_(common_bits) {
+        numzeros = 0;
         buckets.reserve(this->number_of_buckets);
         
         if (this->fingerprint_size < 1) {
@@ -37,7 +39,7 @@ CuckooFilter::CuckooFilter(std::size_t number_of_buckets, std::size_t fingerprin
         }
         for (std::size_t i = 0; i < this->number_of_buckets; i++) {
             // NOLINTNEXTLINE
-            buckets[i].bit_array = new char[bytes_per_bucket]; // Allocate memory for the bucket
+            buckets[i].bit_array = new char[bytes_per_bucket]{}; // Allocate memory for the bucket
             // 0 out the bucket
             memset(buckets[i].bit_array, 0, bytes_per_bucket);
         }
@@ -61,19 +63,22 @@ std::optional<Victim> CuckooFilter::insert(const std::string &item, std::optiona
         return std::nullopt;
     }
 
-    uint32_t index1 = hash(item) % number_of_buckets;
-    uint32_t fingerprint;
+    uint32_t hash_value = given_fingerprint.value();
+    uint32_t index1 = (hash_value >> fingerprint_size) % number_of_buckets;
+    uint32_t fingerprint = hash_value & ((1U << fingerprint_size) - 1);
+    if (fingerprint == 0) numzeros++;
+
+    // uint32_t index1 = hash(item) % number_of_buckets;
+    // uint32_t fingerprint;
 
     // If the fingerprint is given, use it, otherwise generate a new one 
     // -> with this we want to reduce the number of hash calls which are expensive
-    if (given_fingerprint.has_value()){
-        fingerprint = given_fingerprint.value();
-    } else {
-        fingerprint = hash(item);
-        fingerprint = fingerprint & ((1 << fingerprint_size) - 1);
-    }
-
-    uint32_t index2 = (index1 ^ hash(fingerprint)) % number_of_buckets;
+    // if (given_fingerprint.has_value()){
+    //     fingerprint = given_fingerprint.value();
+    // } else {
+    //     fingerprint = hash(item);
+    //     fingerprint = fingerprint & ((1 << fingerprint_size) - 1);
+    // }
 
     // save f - current_level bits from the fingerprint
     uint32_t saved_bits = fingerprint & ((1 << current_level) - 1);
@@ -85,28 +90,34 @@ std::optional<Victim> CuckooFilter::insert(const std::string &item, std::optiona
 
     auto current_level_fingerprint_size = fingerprint_size - current_level;
 
+    // std::cout << "FINGERPRINT to insert : " << fingerprint << std::endl;
+
     // check how many of given fingerprint we already have in the buckets
+    // ?
     std::size_t counter = 0;
-    for (std::size_t i = 0; i < BUCKET_SIZE; i++) {
-        if (full_slots[index1 * BUCKET_SIZE + i]) {
-            auto result1 = buckets[index1].read(i, current_level_fingerprint_size);
-            if (result1 == fingerprint) {
-                counter++;
-            }
-        }
-        if (full_slots[index2 * BUCKET_SIZE + i]) {
-            auto result2 = buckets[index2].read(i, current_level_fingerprint_size);
-            if (result2 == fingerprint) {
-                counter++;
-            }
-        }
-    }
+    // for (std::size_t i = 0; i < BUCKET_SIZE; i++) {
+    //     if (full_slots[index1 * BUCKET_SIZE + i]) {
+    //         auto result1 = buckets[index1].read(i, current_level_fingerprint_size);
+    //         std::cout << "result1 " << result1 << std::endl;
+    //         if (result1 == fingerprint) {
+    //             counter++;
+    //         }
+    //     }
+    //     if (full_slots[index2 * BUCKET_SIZE + i]) {
+    //         auto result2 = buckets[index2].read(i, current_level_fingerprint_size);
+    //         std::cout << "result2 " << result2 << std::endl;
+    //         if (result2 == fingerprint) {
+    //             counter++;
+    //         }
+    //     }
+    // }
 
-    if (counter >= BUCKET_SIZE) {
-        return std::nullopt;
-    }
+    // if (counter >= BUCKET_SIZE) {
+    //     return std::nullopt;
+    // }
 
     for (std::size_t i = 0; i < BUCKET_SIZE; i++) {
+        // If insertion succeeds, return
         if (!full_slots[index_to_use * BUCKET_SIZE + i]) {
             buckets[index_to_use].write(i, fingerprint, current_level_fingerprint_size);
             full_slots[index_to_use * BUCKET_SIZE + i] = true;
@@ -114,6 +125,7 @@ std::optional<Victim> CuckooFilter::insert(const std::string &item, std::optiona
             return std::nullopt;
         }
     }
+    // Initiate kickout
     uint32_t index_of_victim = index_to_use;
     for (std::size_t i = 0; i < MAX_KICKS; i++) {
         
@@ -146,6 +158,7 @@ std::optional<Victim> CuckooFilter::insert(const std::string &item, std::optiona
         }
     }
 
+    // Kickout failed, return signal to trigger expansion
     accept_values = false;
 
     return std::make_optional(Victim{fingerprint, index_of_victim});
@@ -192,7 +205,6 @@ void CuckooFilter::insert_with_index(uint32_t index, uint32_t fingerprint) {
             return;
         }
     }
-    uint32_t index_of_victim = index_to_use;
     for (std::size_t i = 0; i < MAX_KICKS; i++) {
         std::size_t bucket_index = rand() % BUCKET_SIZE;
         std::uint32_t temp_fingerprint = buckets[index_to_use].read(bucket_index, current_level_fingerprint_size);
@@ -206,8 +218,6 @@ void CuckooFilter::insert_with_index(uint32_t index, uint32_t fingerprint) {
 
         fingerprint <<= current_level;
         fingerprint |= saved_bits;
-
-        index_of_victim = index_to_use;
 
         index_to_use = (index_to_use ^ hash(fingerprint)) % number_of_buckets;
 

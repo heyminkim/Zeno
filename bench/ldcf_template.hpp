@@ -11,9 +11,9 @@ namespace zeno_bench {
 class LDCF : public Filter {
     public:
     LDCF(uint64_t exp_size, uint64_t fp_bits) : valid(true) {
-        uint32_t capacity = 1U << exp_size;
-        double target_fpr = std::pow(2, -static_cast<double>(fp_bits + 3));
-        filter = new baseline_LDCF::LogarithmicDynamicCuckooFilter(target_fpr, capacity, 6);
+        uint32_t capacity = 1U << (exp_size);
+        double target_fpr = std::pow(2, -static_cast<double>(fp_bits)); 
+        filter = new baseline_LDCF::LogarithmicDynamicCuckooFilter(target_fpr, capacity, 1);
     }
 
     ~LDCF() {
@@ -21,8 +21,9 @@ class LDCF : public Filter {
     }
 
     bool insert(const uint64_t key) {
-        filter->insert(std::to_string(key));
-        return true;
+        bool res = filter->insert(std::to_string(key));
+        if (!res) valid = false;
+        return res;
     }
 
     bool query(const uint64_t key) const {
@@ -48,8 +49,12 @@ class LDCF : public Filter {
 
     void contract() {}
 
+    void print_contents() const {
+        filter->print_contents();
+    }
+
     uint64_t size() const {
-        return 0;
+        return filter->Size();
     }
 
     std::string name(const bool verbose=false) const {

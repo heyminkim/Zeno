@@ -12,6 +12,7 @@
 #include "izf_template.hpp"
 #include "vzf_template.hpp"
 #include "aleph_template.hpp"
+#include "infinifilter_template.hpp"
 
 #include "../util/cxxopts.hpp"
 
@@ -51,6 +52,8 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    bool record_query = (fn_query != "/dev/null");
+
     // Generate data
     uint64_t nslots = (1ULL << qbits);
     uint64_t nvals = nslots;
@@ -59,14 +62,28 @@ int main(int argc, char** argv) {
     }
 
     // Dummy keys for testing false positive rates
-    uint64_t num_queries = 500'000;
+    uint64_t num_queries = 100'000;
+    uint64_t* queries;
+    queries = (uint64_t*)malloc(num_queries * sizeof(queries[0]));
+    size_t total_bytes = num_queries * sizeof(queries[0]);
+    size_t done = 0;
+    unsigned char* p = (unsigned char*)queries;
+    while (done < total_bytes) {
+        int this_chunk = (total_bytes - done > (size_t)INT_MAX)
+                ? INT_MAX
+                : (int)(total_bytes - done);
+        if (RAND_bytes(p + done, this_chunk) != 1) {
+            std::cerr << "RAND_bytes failed at offset " << done << std::endl;
+            abort();
+        }
+        done += this_chunk;
+    }
 
     zeno_bench::Filter* filter;
     if (r == 1) filter = new zeno_bench::IZF(qbits, qbits + fbits, 1);
     else if (r == 2) filter = new zeno_bench::VZF(qbits, qbits + fbits, 1);
     else if (r == 3) filter = new zeno_bench::Aleph(qbits, qbits + fbits);
-
-    util::set_cpu_affinity(1);
+    else if (r == 4) filter = new zeno_bench::InfiniFilter(qbits, qbits + fbits);
 
     file_query << label << ",";
     file_fpr << label << ",";
@@ -95,13 +112,15 @@ int main(int argc, char** argv) {
         if (!ret) {
             // Calculate FPR and query time
             uint64_t num_positives = 0;
-            for (uint64_t j = 0; j < num_queries; ++j) {
-                uint64_t random_query = util::generate_random();
-                query_time += util::timing([&]{
-                    ret = filter->query(random_query);
-                });
-                if (ret) {  // there is a false positive
-                    ++num_positives;
+            if (record_query) {
+                    for (uint64_t j = 0; j < num_queries; ++j) {
+                    // uint64_t random_query = util::generate_random();
+                    query_time += util::timing([&]{
+                        ret = filter->query(queries[j]);
+                    });
+                    if (ret) {  // there is a false positive
+                        ++num_positives;
+                    }
                 }
             }
 
@@ -113,9 +132,7 @@ int main(int argc, char** argv) {
             query_time = 0;
 
             // Resize filter if insertion fails
-            grow_time += util::timing([&]{
-                ret = filter->resize();
-            });
+            ret = filter->resize();
             if (!ret) {
                 terminate_loop = true;
             }

@@ -10,13 +10,13 @@
 #include "util.hpp"
 #include "base.hpp"
 
-#include "vzfc_template.hpp"
+#include "vzf_template.hpp"
 
 #include "../util/cxxopts.hpp"
 
-void insert_keys(zeno_bench::VZFC* filter, const uint64_t* keys, uint64_t num_keys) {
+void insert_keys(zeno_bench::VZF* filter, const uint64_t* keys, uint64_t num_keys) {
     for (uint64_t i = 0; i < num_keys; ++i) {
-        filter->insert(keys[i]);
+        filter->concurrent_insert(keys[i]);
     }
 }
 
@@ -28,6 +28,7 @@ int main(int argc, char** argv) {
       ("e,expansion", "Number of expected expansions", cxxopts::value<uint64_t>()->default_value("1"))
       ("r,region", "Size of locking region in bits", cxxopts::value<uint64_t>()->default_value("12"))
       ("t,threads", "Number of threads", cxxopts::value<uint64_t>()->default_value("1"))
+      ("a,threshold", "Expansion threshold", cxxopts::value<uint64_t>()->default_value("9"))
       ("fn_insert", "File name to write insert thpt results to", cxxopts::value<std::string>()->default_value("/dev/null"))
     ;
 
@@ -39,6 +40,7 @@ int main(int argc, char** argv) {
     uint64_t expansions = result["expansion"].as<uint64_t>();
     uint64_t region = result["region"].as<uint64_t>();
     uint64_t nthreads = result["threads"].as<uint64_t>();
+    uint64_t threshold = result["threshold"].as<uint64_t>();
 
     // Files to write results
     std::string fn_insert = result["fn_insert"].as<std::string>();
@@ -59,7 +61,7 @@ int main(int argc, char** argv) {
     for (uint64_t i = 0; i < expansions; ++i) {
         nvals *= 2;
     }
-    nvals = 80 * nvals / 100;
+    nvals = 70 * nvals / 100;
 
     uint64_t* keys = (uint64_t*)malloc(nvals * sizeof(keys[0]));
     size_t total_bytes = nvals * sizeof(keys[0]);
@@ -79,10 +81,11 @@ int main(int argc, char** argv) {
     bool auto_resize = true;
     
     // Configure filter
-    zeno_bench::VZFC* filter = new zeno_bench::VZFC(qbits, qbits + fbits, 1, region);
+    double exp_threshold = ((double)threshold) * 0.1;
+    zeno_bench::VZF* filter = new zeno_bench::VZF(qbits, qbits + fbits, 1, exp_threshold);
     filter->auto_resize(auto_resize);
 
-    file_insert << filter->name(false) << "con" << region << ",";
+    file_insert << filter->name(false) << "con" << threshold << ",";
 
     // Aggregated insert time
     uint64_t insert_time = 0;

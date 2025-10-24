@@ -9,6 +9,7 @@
 #include <thread>
 #include <unordered_map>
 #include <vector>
+#include <random>
 #include <openssl/rand.h>
 
 namespace util {
@@ -42,6 +43,11 @@ uint64_t generate_random() {
         abort();
     }
     return value;
+}
+
+thread_local std::mt19937_64 rng(std::random_device{}());
+uint64_t generate_random_fast() {
+    return rng();
 }
 
 uint64_t* read_vals(const std::string& filename, uint64_t& nvals) {

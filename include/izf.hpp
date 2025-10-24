@@ -25,10 +25,7 @@
 #include <mutex>
 #include <shared_mutex>
 #include <thread>
-
-#if defined(__x86_64__)
 #include <immintrin.h>
-#endif
 
 #include "decls.hpp"
 #include "hash.hpp"
@@ -87,8 +84,6 @@ class IZF {
      * Increases the capacity of the underlying memory. The parameters are for a potential 
      * 'dangling' hash; the hash that caused expansion will not have been inserted to the larger 
      * filter. This function handles that case. 
-     * TODO: Currently public for debugging purposes, but ideally should be 
-     * private. 
      * @param new_hash The 'dangling' hash to be inserted in the larger filter
      * @param new_count The count of `new_hash`
      * @param flags The original flag used for insertion. 
@@ -157,9 +152,6 @@ class IZF {
     void get_max_locked_region() const {
         std::cerr << "max locked region " << runtimedata_->max_locked_region << std::endl;
     }
-    uint64_t get_num_slots() const {
-        return metadata_->nslots;
-    }
 
     // Checks whether the filter is expanding. 
     bool is_filter_growing() const {
@@ -176,26 +168,6 @@ class IZF {
     inline
     uint64_t get_index_block_size() const {
         return index_block_.size();
-    }
-
-    inline
-    void check_empty() const {
-        for (uint64_t i = 0; i < metadata_->xnslots; ++i) {
-            qfblock* qb = get_block(i / kSlotsPerBlock);
-            // assert(qb->offset == 0);
-            // assert(qb->occupieds[0] == 0);
-            // assert(qb->runends[0] == 0);
-            uint64_t* p = reinterpret_cast<uint64_t*>(&get_block(i / kSlotsPerBlock)->
-                          slots[(i % kSlotsPerBlock) * metadata_->bits_per_slot / 8]);
-            uint64_t t;
-            memcpy(&t, p, sizeof(t));
-            uint64_t occ;
-            memcpy(&occ, qb->occupieds, sizeof(uint64_t));
-            if (occ & (1ULL << (i % kSlotsPerBlock))) {
-                print_by_index(i);
-            }
-        }
-        std::cout << "emptiness checked" << std::endl;
     }
 
     void print_by_index(uint64_t index) const {
@@ -235,38 +207,6 @@ class IZF {
             result.push_back(running_cluster_length);
             running_cluster_length = 0;
         }
-    }
-
-    /**
-     * Calculates the number of non-empty slots.
-     */
-    uint64_t calculate_nonempty_slots() const {
-        uint64_t running_cluster_length = 0;
-        uint64_t current_runend_index = 0;
-        uint64_t current_index = 0;
-
-        uint64_t nonempty_slot = 0;
-        while (true) {
-            if (current_index > metadata_->nslots) break;
-            if (!is_occupied(current_index)) {
-                ++current_index;
-                continue;
-            }
-            current_runend_index = run_end(current_index);
-            running_cluster_length += current_runend_index - current_index + 1;
-            for (uint64_t i = current_index + 1; i <= current_runend_index; ++i) {
-                if (!is_occupied(i)) continue;
-                else {
-                    uint64_t new_runend_index = run_end(i);
-                    running_cluster_length += new_runend_index - current_runend_index;
-                    current_runend_index = new_runend_index;
-                }
-            }
-            current_index = current_runend_index + 1;
-            nonempty_slot += running_cluster_length;
-            running_cluster_length = 0;
-        }
-        return nonempty_slot;
     }
 
     void calculate_runend_diff() {
@@ -1406,7 +1346,7 @@ class IZF {
         std::cout << "printing finished" << std::endl;
     }
 
-};  // class Zeno
+};  // class IZF
 
 IZF::IZF(uint64_t exp_size, uint64_t hash_bits, uint64_t value_bits, 
            uint64_t reciprocal_ratio, hashmode hash_mode, uint32_t seed, double threshold = 0.8) {
@@ -4957,27 +4897,6 @@ uint64_t IZF::decode_counter(uint64_t index, uint64_t& remainder, uint64_t& coun
 
     count = cnt + 4;
     return end + 1;
-}
-
-inline
-void IZF::debug_dump_block() const {
-    qfblock* qb = nullptr;
-    for (uint64_t i = 0; i < metadata_->nblocks; ++i) {
-        const uint64_t block_ind = i;
-        qb = get_block(block_ind);
-        std::cout << "============================= block " << i << " offset=" << +qb->offset << std::endl;
-        for (uint32_t j = 0; j < kSlotsPerBlock; j++) {
-            const uint64_t ind = block_ind + j;
-            if (ind >= metadata_->xnslots)
-                break;
-            const uint64_t slot = get_slot(ind);
-            std::cout << '@' << ind << '(' << j << "):" << is_occupied(ind) << ',' << is_runend(ind) << ',';
-            for (int32_t k = metadata_->bits_per_slot - 1; k >= 0; k--)
-                std::cout << ((slot >> k) & 1);
-            std::cout << ' ';
-        }
-        std::cout << std::endl << std::endl;
-    }
 }
 
 }   // namespace zeno

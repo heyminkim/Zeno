@@ -26,7 +26,10 @@
 #include <shared_mutex>
 #include <thread>
 #include <queue>
+
+#if defined(__x86_64__)
 #include <immintrin.h>
+#endif
 
 #include "decls.hpp"
 #include "hash.hpp"
@@ -36,14 +39,14 @@
 
 namespace zeno {
 
-class Aleph {
+class InfiniFilter {
     public:
-    explicit Aleph(uint64_t exp_size, uint64_t hash_bits, hashmode hash_mode, uint32_t seed, 
+    explicit InfiniFilter(uint64_t exp_size, uint64_t hash_bits, hashmode hash_mode, uint32_t seed, 
                    double threshold);
-    ~Aleph();
-    Aleph(const Aleph& zeno) = delete;
-    Aleph& operator=(const Aleph& zeno) = delete;
-    Aleph& operator=(Aleph&& other) noexcept;
+    ~InfiniFilter();
+    InfiniFilter(const InfiniFilter& zeno) = delete;
+    InfiniFilter& operator=(const InfiniFilter& zeno) = delete;
+    InfiniFilter& operator=(InfiniFilter&& other) noexcept;
 
     /////////////////////////////
     // Modification functions. //
@@ -127,8 +130,8 @@ class Aleph {
      * Debugging code for querying secondary hash table. `flags` must have kKeyIsHash enabled. 
      */
     uint64_t query_secondary(uint64_t key, uint64_t& value, uint8_t flags) {
-        if (secondary_aleph_) {
-            return secondary_aleph_->query(key, value, flags);
+        if (secondary_filter_) {
+            return secondary_filter_->query(key, value, flags);
         }
         return 0;
     }
@@ -148,8 +151,8 @@ class Aleph {
     }
     uint64_t get_memory_usage() const {
         uint64_t memory_usage = metadata_->total_memory_usage;
-        if (secondary_aleph_ != nullptr) {
-            memory_usage += secondary_aleph_->get_memory_usage();
+        if (secondary_filter_ != nullptr) {
+            memory_usage += secondary_filter_->get_memory_usage();
         }
         return memory_usage;
     }
@@ -197,7 +200,7 @@ class Aleph {
     }
 
     private:
-    friend class iterator<Aleph>;
+    friend class iterator<InfiniFilter>;
     /** 
      * Class for computing fixed point operations. The results are always automatically converted to 
      * uint64_t. 
@@ -412,7 +415,7 @@ class Aleph {
     qfruntime*  runtimedata_;
     qfmetadata* metadata_;
     qfblock*    blocks_;
-    Aleph*      secondary_aleph_;
+    InfiniFilter*      secondary_filter_;
     /* TODO: make deletion support multiple deletes at once. Now only supports one at a time */
     std::queue<uint64_t> deletion_queue_;
 
@@ -955,7 +958,10 @@ class Aleph {
         return metadata_->nslots;
     }
 	uint64_t count_occupied_slots() const {
+        // metadata_->pc_noccupied_slots.sync();
         return metadata_->pc_noccupied_slots.get_counter();
+        // return metadata_->noccupied_slots;
+        // return metadata_->atomic_noccupied_slots;
     }
 
     // Bit size info
@@ -1055,9 +1061,9 @@ class Aleph {
         std::cout << "printing finished" << std::endl;
     }
 
-};  // class Aleph
+};  // class Zeno
 
-Aleph::Aleph(uint64_t exp_size, uint64_t hash_bits, hashmode hash_mode, uint32_t seed, 
+InfiniFilter::InfiniFilter(uint64_t exp_size, uint64_t hash_bits, hashmode hash_mode, uint32_t seed, 
              double threshold = 0.9) {
     uint64_t num_slots, xnslots, nblocks;
     uint64_t fingerprint_bits, bits_per_slot;
@@ -1112,7 +1118,7 @@ Aleph::Aleph(uint64_t exp_size, uint64_t hash_bits, hashmode hash_mode, uint32_t
     metadata_->qfblock_size = qfblock_size;
     metadata_->expansion_threshold = threshold;
 
-    secondary_aleph_ = nullptr;
+    secondary_filter_ = nullptr;
 
 #if defined(WIDENING)
     metadata_->num_expansions = 0;
@@ -1130,7 +1136,7 @@ Aleph::Aleph(uint64_t exp_size, uint64_t hash_bits, hashmode hash_mode, uint32_t
 #endif
 }
 
-inline Aleph::~Aleph() {
+inline InfiniFilter::~InfiniFilter() {
     if (runtimedata_) {
         while (runtimedata_->resizing_region.load(std::memory_order_acquire) != -1) {
             std::this_thread::yield();
@@ -1146,12 +1152,12 @@ inline Aleph::~Aleph() {
     if (blocks_) {
         delete blocks_;
     }
-    if (secondary_aleph_) {
-        delete secondary_aleph_;
+    if (secondary_filter_) {
+        delete secondary_filter_;
     }
 }
 
-inline Aleph& Aleph::operator=(Aleph&& other) noexcept {
+inline InfiniFilter& InfiniFilter::operator=(InfiniFilter&& other) noexcept {
     metadata_ = other.metadata_;
     blocks_ = other.blocks_;
     runtimedata_ = other.runtimedata_;
@@ -1161,7 +1167,7 @@ inline Aleph& Aleph::operator=(Aleph&& other) noexcept {
     return *this;
 }
 
-int Aleph::insert(uint64_t key, uint64_t value, uint64_t count, uint8_t flags) {
+int InfiniFilter::insert(uint64_t key, uint64_t value, uint64_t count, uint8_t flags) {
     if (count_occupied_slots() >= metadata_->nslots * metadata_->expansion_threshold) {
         // No more space. Either grow or fail based on `auto_resize`
         if (metadata_->auto_resize) {
@@ -1195,6 +1201,8 @@ int Aleph::insert(uint64_t key, uint64_t value, uint64_t count, uint8_t flags) {
             }
         }
         else {
+            // std::cout << "noccs : " << count_occupied_slots() << std::endl;
+            // std::cout << "thld  : " << metadata_->nslots * metadata_->expansion_threshold << std::endl;
             return kErrNoSpace;
         }
     }
@@ -1217,7 +1225,9 @@ int Aleph::insert(uint64_t key, uint64_t value, uint64_t count, uint8_t flags) {
         }
         insert_unary(key);
     }
-    uint64_t hash = (key << metadata_->value_bits) | (value & BITMASK(metadata_->value_bits));
+    // TODO: No payload support for now
+    // uint64_t hash = (key << metadata_->value_bits) | (value & BITMASK(metadata_->value_bits));
+    uint64_t hash = key;
     
     int ret = 1;
 
@@ -1253,7 +1263,8 @@ int Aleph::insert(uint64_t key, uint64_t value, uint64_t count, uint8_t flags) {
 }
 
 inline
-int32_t Aleph::remove(uint64_t key, uint64_t value, uint64_t count, uint8_t flags) {
+int32_t InfiniFilter::remove(uint64_t key, uint64_t value, uint64_t count, uint8_t flags) {
+    uint64_t original_key = key;
     if (GET_KEY_HASH(flags) != kKeyIsHash) {
         auto hash_mode = get_hashmode();
         if (hash_mode == hashmode::Default) {
@@ -1263,7 +1274,8 @@ int32_t Aleph::remove(uint64_t key, uint64_t value, uint64_t count, uint8_t flag
             key = hash_64(key, BITMASK(63));
         }
     }
-    uint64_t hash = (key << metadata_->value_bits) | (value & BITMASK(metadata_->value_bits));
+    // uint64_t hash = (key << metadata_->value_bits) | (value & BITMASK(metadata_->value_bits));
+    uint64_t hash = key;
     int32_t ret = 0;
     // Delete longest matching fingerprints until we have deleted up to `count`
     // entries or failed fo find matching fingerprint
@@ -1272,10 +1284,15 @@ int32_t Aleph::remove(uint64_t key, uint64_t value, uint64_t count, uint8_t flag
         if (ret < 0) return ret;
     }
 
+    // Entries are not fully removed. Check the secondary hash table
+    if (count) {
+        if (secondary_filter_) secondary_filter_->remove(original_key, value, count, flags);
+    }
+
     return ret;
 }
 
-int Aleph::delete_key_value(uint64_t key, uint64_t value, uint8_t flags) {
+int InfiniFilter::delete_key_value(uint64_t key, uint64_t value, uint8_t flags) {
     if (GET_KEY_HASH(flags) != kKeyIsHash) {
         auto hash_mode = get_hashmode();
         if (hash_mode == hashmode::Default) {
@@ -1291,24 +1308,24 @@ int Aleph::delete_key_value(uint64_t key, uint64_t value, uint8_t flags) {
     return remove_internal(hash, std::numeric_limits<uint64_t>::max(), flags);
 }
 
-int64_t Aleph::grow(uint64_t dangling_hash, uint64_t dangling_count, uint8_t flags) {
+int64_t InfiniFilter::grow(uint64_t dangling_hash, uint64_t dangling_count, uint8_t flags) {
     uint64_t q_bits = metadata_->quotient_bits + 1ULL;
 #if defined(WIDENING)
     uint64_t original_fingerprint_length = metadata_->fingerprint_bits -
                                            2 * std::floor(std::log2(metadata_->num_expansions + 1));
     uint64_t new_fingerprint_length = original_fingerprint_length + 
                                            2 * std::floor(std::log2(metadata_->num_expansions + 2));
-    Aleph new_filter(q_bits, q_bits + new_fingerprint_length, metadata_->hash_mode, metadata_->seed);
+    InfiniFilter new_filter(q_bits, q_bits + new_fingerprint_length, metadata_->hash_mode, metadata_->seed);
     new_filter.set_num_expansions(metadata_->num_expansions + 1);
 #else
-    Aleph new_filter(q_bits, metadata_->hash_bits + 1ULL, metadata_->hash_mode, metadata_->seed);
+    InfiniFilter new_filter(q_bits, metadata_->hash_bits + 1ULL, metadata_->hash_mode, metadata_->seed);
 #endif
     new_filter.set_auto_resize(metadata_->auto_resize);
 
     uint64_t fingerprint, hash, value, count, quotient;
     int64_t ret_numkeys = 0;
     int32_t status = 0;
-    iterator<Aleph> it(this, 0);
+    iterator<InfiniFilter> it(this, 0);
     int ret;
 
     uint64_t canonical_slot;
@@ -1319,94 +1336,25 @@ int64_t Aleph::grow(uint64_t dangling_hash, uint64_t dangling_count, uint8_t fla
 #if defined(WIDENING)
     uint64_t new_void_entry = BITMASK(new_fingerprint_length) - 1;
 #endif
-    if (secondary_aleph_) {
-        while (!deletion_queue_.empty()) {
-            // deleted canonical slot
-            uint64_t deleted_cs = deletion_queue_.front();
-            deletion_queue_.pop();
-            uint64_t log_copies = secondary_aleph_->query_mother_hash(deleted_cs);
-            uint64_t copies = 1ULL << log_copies;
-            uint64_t old_cs_length = metadata_->quotient_bits - log_copies;
-            uint64_t base_cs = deleted_cs & BITMASK(old_cs_length);
-            for (uint64_t c = 0; c < copies; ++c) {
-                uint64_t cs_to_delete = (c << old_cs_length) | base_cs;
-                uint64_t hash_to_delete;
-                if (cs_to_delete == deleted_cs) {
-                    hash_to_delete = (A << metadata_->quotient_bits) | cs_to_delete;
-                } else {
-                    hash_to_delete = (B << metadata_->quotient_bits) | cs_to_delete;
-                }
-                remove_void_internal(hash_to_delete, 1, kNoLock | kKeyIsHash);
-            }
-            secondary_aleph_->remove(deleted_cs, 0, 1, kNoLock | kKeyIsHash);
-        }
-#ifndef WIDENING
-        secondary_aleph_->grow(0, 0, flags);
-#endif
-        // secondary_aleph_->grow(0, 0, flags);
-    }
     
 
     for (; it.is_valid(); ++it) {
         canonical_slot = it.get_canonical_slot();
         it.get_entry(fingerprint, value, count);
-        if (fingerprint == B) {
-            // duplicate once
 #if defined(WIDENING)
-            hash = (new_void_entry << q_bits) | canonical_slot;
-#else
-            hash = (fingerprint << q_bits) | canonical_slot;
-#endif
-            ret = new_filter.insert(hash, value, count, kNoLock | kKeyIsHash);
-            if (ret < 0) {
-                std::cerr << "Failed to insert key: " << hash << " into the new filter." << std::endl;
-                return ret;
+        hash = adjust_fingerprint_length_widening(canonical_slot, fingerprint, new_fingerprint_length);
+        if (fingerprint == new_void_entry) {
+            if (secondary_filter_ == nullptr) {
+                uint64_t secondary_qbits = metadata_->quotient_bits - metadata_->num_expansions;
+                uint64_t secondary_fbits = original_fingerprint_length;
+                uint64_t secondary_hbits = secondary_qbits + secondary_fbits;
+                secondary_filter_ = new InfiniFilter(secondary_qbits, secondary_hbits, 
+                                                metadata_->hash_mode, metadata_->seed, 
+                                                metadata_->expansion_threshold);
+                secondary_filter_->set_auto_resize(true);
             }
-            // duplicate twice
-            canonical_slot = canonical_slot | (1ULL << metadata_->quotient_bits);
-#if defined(WIDENING)
-            hash = (new_void_entry << q_bits) | canonical_slot;
-#else
-            hash = (fingerprint << q_bits) | canonical_slot;
-#endif
-            ret = new_filter.insert(hash, value, count, kNoLock | kKeyIsHash);
-            if (ret < 0) {
-                std::cerr << "Failed to insert key: " << hash << " into the new filter." << std::endl;
-                return ret;
-            }
-            ++ret_numkeys;
+            secondary_filter_->insert(canonical_slot, value, count, kNoLock | kKeyIsHash);
         } else {
-#if defined(WIDENING)
-            hash = adjust_fingerprint_length_widening(canonical_slot, fingerprint, new_fingerprint_length);
-            if (fingerprint == new_void_entry) {
-                if (secondary_aleph_ == nullptr) {
-                    uint64_t secondary_qbits = metadata_->quotient_bits - metadata_->num_expansions;
-                    uint64_t secondary_fbits = original_fingerprint_length;
-                    uint64_t secondary_hbits = secondary_qbits + secondary_fbits;
-                    secondary_aleph_ = new Aleph(secondary_qbits, secondary_hbits, 
-                                                 metadata_->hash_mode, metadata_->seed, 
-                                                 metadata_->expansion_threshold);
-                    secondary_aleph_->set_auto_resize(true);
-                }
-                secondary_aleph_->insert(canonical_slot, value, count, kNoLock | kKeyIsHash);
-            }
-#else
-            hash = adjust_fingerprint_length(canonical_slot, fingerprint);
-            // We have a new void entry - create a new secondary hash table
-            if (fingerprint == B) {
-                if (secondary_aleph_ == nullptr) {
-                    uint64_t secondary_qbits = metadata_-> quotient_bits 
-                                             - (metadata_->fingerprint_bits) + 2;
-                    uint64_t secondary_fbits = metadata_->fingerprint_bits;
-                    secondary_aleph_ = new Aleph(secondary_qbits, secondary_qbits + secondary_fbits, 
-                                                 metadata_->hash_mode, metadata_->seed, 
-                                                 metadata_->expansion_threshold);
-                    secondary_aleph_->set_auto_resize(true);
-                }
-                secondary_aleph_->insert(canonical_slot, value, count, kNoLock | kKeyIsHash);
-            }
-#endif
-    
             ret = new_filter.insert(hash, value, count, kNoLock | kKeyIsHash);
             if (ret < 0) {
                 std::cerr << "Failed to insert key: " << hash << " into the new filter." << std::endl;
@@ -1414,6 +1362,29 @@ int64_t Aleph::grow(uint64_t dangling_hash, uint64_t dangling_count, uint8_t fla
             }
             ++ret_numkeys;
         }
+#else
+        hash = adjust_fingerprint_length(canonical_slot, fingerprint);
+        // We have a new void entry - send it over to the secondary hash table
+        if (fingerprint == B) {
+            if (secondary_filter_ == nullptr) {
+                uint64_t secondary_qbits = metadata_-> quotient_bits 
+                                            - (metadata_->fingerprint_bits - 2);
+                uint64_t secondary_fbits = metadata_->fingerprint_bits;
+                secondary_filter_ = new InfiniFilter(secondary_qbits, secondary_qbits + secondary_fbits, 
+                                                metadata_->hash_mode, metadata_->seed, 
+                                                metadata_->expansion_threshold);
+                secondary_filter_->set_auto_resize(true);
+            }
+            secondary_filter_->insert(canonical_slot, value, count, kNoLock | kKeyIsHash);
+        } else {
+            ret = new_filter.insert(hash, value, count, kNoLock | kKeyIsHash);
+            if (ret < 0) {
+                std::cerr << "Failed to insert key: " << hash << " into the new filter." << std::endl;
+                return ret;
+            }
+            ++ret_numkeys;
+        }
+#endif
     }
     
     // There is a 'dangling' hash to be inserted.
@@ -1443,15 +1414,16 @@ int64_t Aleph::grow(uint64_t dangling_hash, uint64_t dangling_count, uint8_t fla
     return ret_numkeys;
 }
 
-int64_t Aleph::contract() {
-    Aleph new_filter(metadata_->quotient_bits - 1, 
+int64_t InfiniFilter::contract() {
+    InfiniFilter new_filter(metadata_->quotient_bits - 1, 
                      metadata_->hash_bits - 1,
                      metadata_->hash_mode, metadata_->seed);
-    new_filter.set_auto_resize(metadata_->auto_resize);
+    new_filter.set_auto_resize(true);
 
     uint64_t fingerprint, hash, value, count, quotient;
     int64_t ret_numkeys = 0;
     int32_t status = 0;
+    iterator<InfiniFilter> it(this, 0);
     int ret;
 
     uint64_t canonical_slot;
@@ -1459,12 +1431,12 @@ int64_t Aleph::contract() {
     uint64_t A = BITMASK(metadata_->fingerprint_bits);
     uint64_t B = A - 1;
 
-    if (secondary_aleph_) {
+    if (secondary_filter_) {
         while (!deletion_queue_.empty()) {
             // deleted canonical slot
             uint64_t deleted_cs = deletion_queue_.front();
             deletion_queue_.pop();
-            uint64_t log_copies = secondary_aleph_->query_mother_hash(deleted_cs);
+            uint64_t log_copies = secondary_filter_->query_mother_hash(deleted_cs);
             uint64_t copies = 1ULL << log_copies;
             uint64_t old_cs_length = metadata_->quotient_bits - log_copies;
             uint64_t base_cs = deleted_cs & BITMASK(old_cs_length);
@@ -1478,21 +1450,21 @@ int64_t Aleph::contract() {
                 }
                 remove_void_internal(hash_to_delete, 1, kNoLock | kKeyIsHash);
             }
-            secondary_aleph_->remove(deleted_cs, 0, 1, kNoLock | kKeyIsHash);
+            secondary_filter_->remove(deleted_cs, 0, 1, kNoLock | kKeyIsHash);
         }
     
         // Remove void entries by referring to the secondary hash table
-        iterator<Aleph> sit(secondary_aleph_, 0);
+        iterator<InfiniFilter> sit(secondary_filter_, 0);
 
-        uint64_t dist = secondary_aleph_->metadata_->quotient_bits - 1 /*takes f-1 exp. to be void*/
+        uint64_t dist = secondary_filter_->metadata_->quotient_bits - 1 /*takes f-1 exp. to be void*/
                       - (metadata_->quotient_bits - metadata_->fingerprint_bits);
         for (; sit.is_valid(); ++sit) {
             canonical_slot = sit.get_canonical_slot();
             sit.get_entry(fingerprint, value, count);
-            uint64_t void_hash = (fingerprint << secondary_aleph_->metadata_->quotient_bits) | canonical_slot;
+            uint64_t void_hash = (fingerprint << secondary_filter_->metadata_->quotient_bits) | canonical_slot;
             
             uint64_t p = __builtin_clzll((~fingerprint)
-                       << (64 - secondary_aleph_->metadata_->bits_per_slot));
+                       << (64 - secondary_filter_->metadata_->bits_per_slot));
             // void entries are alive
             if (dist > p) continue;
             uint64_t log_copies = p - dist;
@@ -1509,6 +1481,7 @@ int64_t Aleph::contract() {
              *               = sqbits + fbits - p - 1
              * old_cs_length = valid_hash_bits
              */
+            // uint64_t valid_hash_bits = secondary_filter_->metadata_->hash_bits - p - 1;
             void_hash = void_hash & BITMASK(valid_hash_bits);
             
             for (uint64_t c = 0; c < copies; ++c) {
@@ -1528,11 +1501,11 @@ int64_t Aleph::contract() {
         }
     }
 
-    iterator<Aleph> it(this, 0);
     for (; it.is_valid(); ++it) {
         canonical_slot = it.get_canonical_slot();
         it.get_entry(fingerprint, value, count);
         if (fingerprint == B) {
+            ++it;
             continue;
         }
 
@@ -1555,7 +1528,8 @@ int64_t Aleph::contract() {
 }
 
 // TODO: change logic to query for longest matching kv, similar to remove_internal
-uint64_t Aleph::query(uint64_t key, uint64_t& value, uint8_t flags) {
+uint64_t InfiniFilter::query(uint64_t key, uint64_t& value, uint8_t flags) {
+    uint64_t original_key = key;
     if (GET_KEY_HASH(flags) != kKeyIsHash) {
         if (metadata_->hash_mode == hashmode::Default) {
             // Use the upper `hash_bit` bits of the hashed result
@@ -1595,7 +1569,8 @@ uint64_t Aleph::query(uint64_t key, uint64_t& value, uint8_t flags) {
         if (GET_NO_LOCK(flags) != kNoLock) {
             zeno_unlock_region(start_region);
         }
-        return 0;
+        if (secondary_filter_) return secondary_filter_->query(hash, value, flags | kKeyIsHash);
+        else return 0;
     }
 
     int64_t runstart_index = hash_bucket_index == 0 
@@ -1607,20 +1582,15 @@ uint64_t Aleph::query(uint64_t key, uint64_t& value, uint8_t flags) {
     uint64_t current_remainder, current_count, current_end;
     uint64_t runend_index = run_end(hash_bucket_index);
 
-    // TODO
-    uint64_t A = BITMASK(metadata_->fingerprint_bits);
-    uint64_t B = A - 1;
     do {
         current_end = decode_counter(runstart_index, current_remainder, current_count);
         value = current_remainder & BITMASK(metadata_->value_bits);
         current_remainder = current_remainder >> metadata_->value_bits;
-        if (current_remainder == B || check_fingerprint(current_remainder, hash_remainder)) {
+        if (check_fingerprint(current_remainder, hash_remainder)) {
             if (GET_NO_LOCK(flags) != kNoLock) {
                 zeno_unlock_region(start_region);
             }
             return current_count;
-        } else if (current_remainder == A) {
-            return 0;
         }
         runstart_index = current_end + 1;
     } while (runend_index != current_end);
@@ -1629,11 +1599,13 @@ uint64_t Aleph::query(uint64_t key, uint64_t& value, uint8_t flags) {
         zeno_unlock_region(start_region);
     }
 
-    return 0;
+    // No key found in current filter. Search the secondary filters
+    if (secondary_filter_) return secondary_filter_->query(hash, value, flags | kKeyIsHash);
+    else return 0;
 }
 
 inline
-int Aleph::insert1(uint64_t hash, uint8_t flags) {
+int InfiniFilter::insert1(uint64_t hash, uint8_t flags) {
     int ret_distance = 0;
     uint64_t hash_remainder = hash >> metadata_->quotient_bits;
     uint64_t hash_bucket_index = hash & BITMASK(metadata_->quotient_bits);
@@ -1931,7 +1903,7 @@ int Aleph::insert1(uint64_t hash, uint8_t flags) {
 }
 
 inline
-int Aleph::insertN(uint64_t hash, uint64_t count, uint8_t flags) {
+int InfiniFilter::insertN(uint64_t hash, uint64_t count, uint8_t flags) {
     int ret_distance = 0;
     uint64_t hash_remainder = hash >> metadata_->quotient_bits;
     uint64_t hash_bucket_index = hash & BITMASK(metadata_->quotient_bits);
@@ -2037,7 +2009,7 @@ int Aleph::insertN(uint64_t hash, uint64_t count, uint8_t flags) {
 }
 
 inline
-int Aleph::remove_longest_internal(uint64_t hash, uint64_t &count, uint8_t runtime_lock) {
+int InfiniFilter::remove_longest_internal(uint64_t hash, uint64_t &count, uint8_t runtime_lock) {
     int ret_numfreedslots = 0;
     uint64_t hash_remainder = hash >> metadata_->quotient_bits;
     uint64_t hash_bucket_index = hash & BITMASK(metadata_->quotient_bits);
@@ -2145,7 +2117,7 @@ int Aleph::remove_longest_internal(uint64_t hash, uint64_t &count, uint8_t runti
 }
 
 inline
-int Aleph::remove_void_internal(uint64_t hash, uint64_t count, uint8_t runtime_lock) {
+int InfiniFilter::remove_void_internal(uint64_t hash, uint64_t count, uint8_t runtime_lock) {
     int ret_numfreedslots = 0;
     uint64_t hash_remainder = hash >> metadata_->quotient_bits;
     uint64_t hash_bucket_index = hash & BITMASK(metadata_->quotient_bits);
@@ -2241,7 +2213,7 @@ int Aleph::remove_void_internal(uint64_t hash, uint64_t count, uint8_t runtime_l
 }
 
 
-inline int Aleph::remove_internal(uint64_t hash, uint64_t count, uint8_t runtime_lock) {
+inline int InfiniFilter::remove_internal(uint64_t hash, uint64_t count, uint8_t runtime_lock) {
     int ret_numfreedslots = 0;
     uint64_t hash_remainder = hash & BITMASK(metadata_->bits_per_slot);
     uint64_t hash_bucket_index = hash >> metadata_->bits_per_slot;
@@ -2297,7 +2269,7 @@ inline int Aleph::remove_internal(uint64_t hash, uint64_t count, uint8_t runtime
     return ret_numfreedslots;
 }
 
-inline bool Aleph::zeno_lock(uint64_t hash_bucket_index, 
+inline bool InfiniFilter::zeno_lock(uint64_t hash_bucket_index, 
                             bool small, 
                             uint8_t runtime_lock) {
     uint64_t hash_bucket_lock_offset  = hash_bucket_index % kNumSlotsToLock;
@@ -2386,7 +2358,7 @@ inline bool Aleph::zeno_lock(uint64_t hash_bucket_index,
     return true;
 }
 
-inline void Aleph::zeno_unlock(uint64_t hash_bucket_index, bool small) {
+inline void InfiniFilter::zeno_unlock(uint64_t hash_bucket_index, bool small) {
     uint64_t hash_bucket_lock_offset  = hash_bucket_index % kNumSlotsToLock;
     if (small) {
         if (kNumSlotsToLock - hash_bucket_lock_offset <= kClusterSize) {
@@ -2401,18 +2373,18 @@ inline void Aleph::zeno_unlock(uint64_t hash_bucket_index, bool small) {
     }
 }
 
-inline bool Aleph::zeno_lock_region(int64_t lock_region_index, uint8_t runtime_lock) {
+inline bool InfiniFilter::zeno_lock_region(int64_t lock_region_index, uint8_t runtime_lock) {
     if (!spin_lock(&runtimedata_->locks[lock_region_index], runtime_lock)) {
         return false;
     }
     return true;
 }
 
-inline void Aleph::zeno_unlock_region(int64_t lock_region_index) {
+inline void InfiniFilter::zeno_unlock_region(int64_t lock_region_index) {
     spin_unlock(&runtimedata_->locks[lock_region_index]);
 }
 
-inline void Aleph::zeno_unlock_range(int64_t start_region, int64_t end_region) {
+inline void InfiniFilter::zeno_unlock_range(int64_t start_region, int64_t end_region) {
     while (true) {
         zeno_unlock_region(end_region);
         if (end_region == start_region) break;
@@ -2420,7 +2392,7 @@ inline void Aleph::zeno_unlock_range(int64_t start_region, int64_t end_region) {
     }
 }
 
-inline bool Aleph::zeno_lock_region_conditionally(int64_t lock_region_index, uint8_t runtime_lock) {
+inline bool InfiniFilter::zeno_lock_region_conditionally(int64_t lock_region_index, uint8_t runtime_lock) {
     // Read-lock of the spinlock array must be done before calling this method. 
     if (lock_region_index <= runtimedata_->resizing_region.load(std::memory_order_acquire)) {
         if (!spin_lock_conditionally(&runtimedata_->locks[lock_region_index], lock_region_index, 
@@ -2441,7 +2413,7 @@ inline bool Aleph::zeno_lock_region_conditionally(int64_t lock_region_index, uin
     return true;
 }
 
-inline uint64_t Aleph::get_slot(const uint64_t& index) const {
+inline uint64_t InfiniFilter::get_slot(const uint64_t& index) const {
     assert(index < metadata_->xnslots);
     /* Should use __uint128_t to support up to 64-bit remainders, but gcc seems
      * to generate buggy code.  :/  */
@@ -2454,7 +2426,7 @@ inline uint64_t Aleph::get_slot(const uint64_t& index) const {
                                 BITMASK(metadata_->bits_per_slot);
 }
 
-inline void Aleph::set_slot(const uint64_t& index, const uint64_t& value) {
+inline void InfiniFilter::set_slot(const uint64_t& index, const uint64_t& value) {
     assert(index < metadata_->xnslots);
     /* Should use __uint128_t to support up to 64-bit remainders, but gcc seems
      * to generate buggy code.  :/  */
@@ -2476,7 +2448,7 @@ inline void Aleph::set_slot(const uint64_t& index, const uint64_t& value) {
     memcpy(p, &t, sizeof(t));
 }
 
-inline uint64_t Aleph::block_offset(const uint64_t& blockidx) const {
+inline uint64_t InfiniFilter::block_offset(const uint64_t& blockidx) const {
 	/* If we have extended counters and a 16-bit (or larger) offset field, then 
     we can safely ignore the possibility of overflowing that field. */
 	if (sizeof(std::declval<qfblock>().offset) > 1 ||
@@ -2485,7 +2457,7 @@ inline uint64_t Aleph::block_offset(const uint64_t& blockidx) const {
 	return run_end(kSlotsPerBlock * blockidx - 1) - kSlotsPerBlock * blockidx + 1;
 }
 
-inline uint64_t Aleph::run_end(const uint64_t& hash_bucket_index) const {
+inline uint64_t InfiniFilter::run_end(const uint64_t& hash_bucket_index) const {
     uint64_t bucket_block_index = hash_bucket_index / kSlotsPerBlock;
 	uint64_t bucket_intrablock_offset = hash_bucket_index % kSlotsPerBlock;
 	uint64_t bucket_blocks_offset = block_offset(bucket_block_index);
@@ -2528,7 +2500,7 @@ inline uint64_t Aleph::run_end(const uint64_t& hash_bucket_index) const {
         return runend_index;
 }
 
-inline uint64_t Aleph::run_end2(const uint64_t& hash_bucket_index) const {
+inline uint64_t InfiniFilter::run_end2(const uint64_t& hash_bucket_index) const {
     uint64_t bucket_block_index = hash_bucket_index / kSlotsPerBlock;
 	uint64_t bucket_intrablock_offset = hash_bucket_index % kSlotsPerBlock;
 	uint64_t bucket_blocks_offset = block_offset(bucket_block_index);
@@ -2576,7 +2548,7 @@ inline uint64_t Aleph::run_end2(const uint64_t& hash_bucket_index) const {
         return runend_index;
 }
 
-inline int Aleph::run_end_threadsafe(const uint64_t& hash_bucket_index, uint64_t& runend_index,
+inline int InfiniFilter::run_end_threadsafe(const uint64_t& hash_bucket_index, uint64_t& runend_index,
                                     int64_t& clusterend_region, uint8_t flags) {
     // This region is already locked. 
     int64_t current_locked_region = clusterend_region;
@@ -2650,7 +2622,7 @@ inline int Aleph::run_end_threadsafe(const uint64_t& hash_bucket_index, uint64_t
     return 0;
 }
 
-inline int64_t Aleph::cluster_end(const uint64_t hash_bucket_index, const uint64_t padding) { 
+inline int64_t InfiniFilter::cluster_end(const uint64_t hash_bucket_index, const uint64_t padding) { 
     // Acquire the runend index of the given hash_bucket_index. 
     uint64_t runend_index = run_end(hash_bucket_index + padding);
 
@@ -2667,7 +2639,7 @@ inline int64_t Aleph::cluster_end(const uint64_t hash_bucket_index, const uint64
     return new_runend_index / kNumSlotsToLock;
 }
 
-inline int Aleph::cluster_end_threadsafe(const uint64_t& hash_bucket_index, uint64_t& runend_index, 
+inline int InfiniFilter::cluster_end_threadsafe(const uint64_t& hash_bucket_index, uint64_t& runend_index, 
                                         int64_t& clusterend_region, uint64_t& clusterend_index, 
                                         uint8_t flags) { 
     // Acquire the runend index of the given hash_bucket_index. 
@@ -2690,7 +2662,7 @@ inline int Aleph::cluster_end_threadsafe(const uint64_t& hash_bucket_index, uint
     return 0;
 }
 
-inline int Aleph::zeno_lock_cluster(uint64_t index, uint64_t& runend, int64_t& clusterend_region, 
+inline int InfiniFilter::zeno_lock_cluster(uint64_t index, uint64_t& runend, int64_t& clusterend_region, 
                                    uint8_t flags) {
     uint64_t clusterend = 0;
     uint64_t start_region = clusterend_region;
@@ -2754,7 +2726,7 @@ inline int Aleph::zeno_lock_cluster(uint64_t index, uint64_t& runend, int64_t& c
     return 0;
 }
 
-inline int32_t Aleph::offset_lower_bound(const uint64_t& slot_index) const {
+inline int32_t InfiniFilter::offset_lower_bound(const uint64_t& slot_index) const {
     const qfblock* b = get_block(slot_index / kSlotsPerBlock);
     const uint64_t slot_offset = slot_index % kSlotsPerBlock;
     const uint64_t boffset = b->offset;
@@ -2767,7 +2739,7 @@ inline int32_t Aleph::offset_lower_bound(const uint64_t& slot_index) const {
     return boffset - slot_offset + __builtin_popcountll(occupieds);
 }
 
-inline uint64_t Aleph::find_first_empty_slot(uint64_t from) const {
+inline uint64_t InfiniFilter::find_first_empty_slot(uint64_t from) const {
     do {
         int32_t t = offset_lower_bound(from);
         assert(t >= 0);
@@ -2778,7 +2750,7 @@ inline uint64_t Aleph::find_first_empty_slot(uint64_t from) const {
     return from;
 }
 
-inline void Aleph::shift_remainders(const uint64_t& start_index, const uint64_t& empty_index) {
+inline void InfiniFilter::shift_remainders(const uint64_t& start_index, const uint64_t& empty_index) {
 	uint64_t last_word = (empty_index + 1) * metadata_->bits_per_slot / 64;
 	const uint64_t first_word = start_index * metadata_->bits_per_slot / 64;
 	int bend = ((empty_index + 1) * metadata_->bits_per_slot) % 64;
@@ -2796,7 +2768,7 @@ inline void Aleph::shift_remainders(const uint64_t& start_index, const uint64_t&
                                               bstart, bend, metadata_->bits_per_slot);
 }
 
-inline void Aleph::shift_slots(int64_t first, uint64_t last, uint64_t distance) {
+inline void InfiniFilter::shift_slots(int64_t first, uint64_t last, uint64_t distance) {
     if (distance == 1) {
         shift_remainders(first, last + 1);
     } else {
@@ -2806,7 +2778,7 @@ inline void Aleph::shift_slots(int64_t first, uint64_t last, uint64_t distance) 
 }
 
 
-inline void Aleph::shift_runends(int64_t first, uint64_t last, uint64_t distance) {
+inline void InfiniFilter::shift_runends(int64_t first, uint64_t last, uint64_t distance) {
     assert(last < metadata_->xnslots && distance < 64);
     uint64_t first_word = first / 64;
     uint64_t bstart = first % 64;
@@ -2838,7 +2810,7 @@ inline void Aleph::shift_runends(int64_t first, uint64_t last, uint64_t distance
 }
 
 inline
-bool Aleph::shift_for_inserts(int operation, 
+bool InfiniFilter::shift_for_inserts(int operation, 
                            uint64_t slot_index, 
                            uint64_t overwrite_index,
                            const uint64_t* remainders, 
@@ -2914,7 +2886,7 @@ bool Aleph::shift_for_inserts(int operation,
 }
 
 inline
-int Aleph::shift_for_deletes(int operation, 
+int InfiniFilter::shift_for_deletes(int operation, 
                            uint64_t bucket_index, 
                            uint64_t overwrite_index,
                            const uint64_t* remainders, 
@@ -3016,7 +2988,7 @@ int Aleph::shift_for_deletes(int operation,
 }
 
 inline
-uint64_t* Aleph::delete_run(uint64_t canonical_slot, uint64_t& run_length) {
+uint64_t* InfiniFilter::delete_run(uint64_t canonical_slot, uint64_t& run_length) {
     uint64_t runstart_index = canonical_slot == 0 
                             ? 0 
                             : run_end(canonical_slot - 1) + 1;
@@ -3036,7 +3008,7 @@ uint64_t* Aleph::delete_run(uint64_t canonical_slot, uint64_t& run_length) {
 }
 
 inline
-uint64_t Aleph::insert_run(uint64_t canonical_slot, uint64_t* buffer, uint64_t run_length) {
+uint64_t InfiniFilter::insert_run(uint64_t canonical_slot, uint64_t* buffer, uint64_t run_length) {
     uint64_t runstart_index = canonical_slot == 0 
                             ? 0 
                             : run_end(canonical_slot - 1) + 1;
@@ -3057,7 +3029,7 @@ uint64_t Aleph::insert_run(uint64_t canonical_slot, uint64_t* buffer, uint64_t r
 }
 
 inline
-uint64_t Aleph::count_key_value(uint64_t key, uint64_t value, uint8_t flags) const {
+uint64_t InfiniFilter::count_key_value(uint64_t key, uint64_t value, uint8_t flags) const {
     if (GET_KEY_HASH(flags) != kKeyIsHash) {
         auto hash_mode = get_hashmode();
         if (hash_mode == hashmode::Default) {
@@ -3091,7 +3063,7 @@ uint64_t Aleph::count_key_value(uint64_t key, uint64_t value, uint8_t flags) con
     return 0;
 }
 
-uint64_t* Aleph::encode_counter(uint64_t remainder, uint64_t counter, uint64_t* slots) {
+uint64_t* InfiniFilter::encode_counter(uint64_t remainder, uint64_t counter, uint64_t* slots) {
     uint64_t digit = remainder;
     uint64_t base = (1ULL << metadata_->bits_per_slot) - 1;
     if (remainder == base) base -= 1;   /* if encoding for A (11..1), disallow counter to be B */
@@ -3148,7 +3120,7 @@ uint64_t* Aleph::encode_counter(uint64_t remainder, uint64_t counter, uint64_t* 
     return p;
 }
 
-uint64_t Aleph::decode_counter(uint64_t index, uint64_t& remainder, uint64_t& count) const {
+uint64_t InfiniFilter::decode_counter(uint64_t index, uint64_t& remainder, uint64_t& count) const {
     uint64_t base;
     uint64_t rem;
     uint64_t cnt;
@@ -3230,6 +3202,27 @@ uint64_t Aleph::decode_counter(uint64_t index, uint64_t& remainder, uint64_t& co
 
     count = cnt + 4;
     return end + 1;
+}
+
+inline
+void InfiniFilter::debug_dump_block() const {
+    qfblock* qb = nullptr;
+    for (uint64_t i = 0; i < metadata_->nblocks; ++i) {
+        const uint64_t block_ind = i;
+        qb = get_block(block_ind);
+        std::cout << "============================= block " << i << " offset=" << +qb->offset << std::endl;
+        for (uint32_t j = 0; j < kSlotsPerBlock; j++) {
+            const uint64_t ind = block_ind + j;
+            if (ind >= metadata_->xnslots)
+                break;
+            const uint64_t slot = get_slot(ind);
+            std::cout << '@' << ind << '(' << j << "):" << is_occupied(ind) << ',' << is_runend(ind) << ',';
+            for (int32_t k = metadata_->bits_per_slot - 1; k >= 0; k--)
+                std::cout << ((slot >> k) & 1);
+            std::cout << ' ';
+        }
+        std::cout << std::endl << std::endl;
+    }
 }
 
 }   // namespace zeno

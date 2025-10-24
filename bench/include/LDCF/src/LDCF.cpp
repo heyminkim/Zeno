@@ -27,8 +27,8 @@ LogarithmicDynamicCuckooFilter::LogarithmicDynamicCuckooFilter(double false_posi
     if (this->fingerprint_size > BYTE_SIZE * 4) {
         this->fingerprint_size = BYTE_SIZE * 4; // max fingerprint size
     }
-    // std::cout << "number_of_buckets : " << number_of_buckets << std::endl;
-    // std::cout << "fingerprint_size : " << fingerprint_size << std::endl;
+    // std::cout << "fingerprint_size " << this->fingerprint_size << std::endl;
+    // std::cout << "number_of_buckets " << this->number_of_buckets << std::endl;
 
     root = new CuckooFilter(number_of_buckets, this->fingerprint_size, 0, 0);
 }
@@ -39,11 +39,11 @@ LogarithmicDynamicCuckooFilter::~LogarithmicDynamicCuckooFilter() {
 }
 
 // Insert an item into the filter
-void LogarithmicDynamicCuckooFilter::insert(const std::string &item) {
+bool LogarithmicDynamicCuckooFilter::insert(const std::string &item) {
     int current_level = 0;
     auto *current_CF = root;
     uint32_t fingerprint = CuckooFilter::hash(item);
-    fingerprint = fingerprint & ((1 << current_CF->getFingerprintSize()) - 1);
+    // fingerprint = fingerprint & ((1 << current_CF->getFingerprintSize()) - 1);
 
     while (current_CF->isFull()) {
         if (getPrefix(fingerprint, current_level, current_CF->getFingerprintSize())) {
@@ -52,6 +52,7 @@ void LogarithmicDynamicCuckooFilter::insert(const std::string &item) {
             // }
             if (current_CF->child0) current_CF = current_CF->child0;
             else {
+                if (fingerprint_size == current_level + 1) return false;
                 current_CF->child0 = new CuckooFilter(number_of_buckets, fingerprint_size, current_level + 1, current_CF->common_bits_);
                 current_CF->child1 = new CuckooFilter(number_of_buckets, fingerprint_size, current_level + 1, current_CF->common_bits_ + (1UL << current_level));
                 current_CF->split();
@@ -62,6 +63,7 @@ void LogarithmicDynamicCuckooFilter::insert(const std::string &item) {
             // }
             if (current_CF->child1) current_CF = current_CF->child1;
             else {
+                if (fingerprint_size == current_level + 1) return false;
                 current_CF->child0 = new CuckooFilter(number_of_buckets, fingerprint_size, current_level + 1, current_CF->common_bits_);
                 current_CF->child1 = new CuckooFilter(number_of_buckets, fingerprint_size, current_level + 1, current_CF->common_bits_ + (1UL << current_level));
                 current_CF->split();
@@ -73,7 +75,8 @@ void LogarithmicDynamicCuckooFilter::insert(const std::string &item) {
     auto victim = current_CF->insert(item, fingerprint);
     // victim is not empty - there is an overflow and we must allocate new CFs. 
     if (victim.has_value()) {
-        // std::cout << "splitting because kickout exceeded" << std::endl;
+        // std::cout << current_CF->current_size << std::endl;
+        if (fingerprint_size == current_level + 1) return false;
         current_CF->child0 = new CuckooFilter(number_of_buckets, fingerprint_size, current_level + 1, current_CF->common_bits_);
         current_CF->child1 = new CuckooFilter(number_of_buckets, fingerprint_size, current_level + 1, current_CF->common_bits_ + (1UL << current_level));
         if (getPrefix(victim->fingerprint, current_level, current_CF->getFingerprintSize())) {
@@ -85,13 +88,14 @@ void LogarithmicDynamicCuckooFilter::insert(const std::string &item) {
         // std::cout << "kicking out " << std::bitset<64>(victim->fingerprint) << std::endl;
         current_CF->split(fingerprint);
     } else if (current_CF->isFull()) {
-        // std::cout << "splitting because full" << std::endl;
+        if (fingerprint_size == current_level + 1) return false;
         current_CF->child0 = new CuckooFilter(number_of_buckets, fingerprint_size, current_level + 1, current_CF->common_bits_);
         current_CF->child1 = new CuckooFilter(number_of_buckets, fingerprint_size, current_level + 1, current_CF->common_bits_ + (1UL << current_level));
         current_CF->split();
     }
     // There should be a fallback for when the second insertion fails, but not implemented
     size_++;
+    return true;
 }
 
 // Check if an item is in the filter

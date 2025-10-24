@@ -46,6 +46,11 @@ class PartitionedCounter {
         return global_counter_.load();
     }
 
+    void reset() {
+        sync();
+        global_counter_.store(0, std::memory_order_relaxed);
+    }
+
     private:
     struct alignas(64) LocalCounter {
         std::atomic<int64_t> counter{0};

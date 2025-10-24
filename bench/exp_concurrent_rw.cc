@@ -11,13 +11,13 @@
 #include "util.hpp"
 #include "base.hpp"
 
-#include "vzfc_template.hpp"
+#include "vzf_template.hpp"
 
 #include "../util/cxxopts.hpp"
 
 std::atomic<bool> stop_flag{false};
 
-void insert_keys(zeno_bench::VZFC* filter, const uint64_t* keys_start, uint64_t num_keys, 
+void insert_keys(zeno_bench::VZF* filter, const uint64_t* keys_start, uint64_t num_keys, 
                  uint64_t interval, std::vector<uint64_t>& result, 
                  std::chrono::_V2::steady_clock::time_point start_time) {
     using clock = std::chrono::steady_clock;
@@ -25,11 +25,7 @@ void insert_keys(zeno_bench::VZFC* filter, const uint64_t* keys_start, uint64_t 
     bool res = false;
 
     for (uint64_t i = 0; i < num_keys; ++i) {
-        if (filter->is_filter_growing()) {
-            filter->concurrent_insert(util::generate_random());
-        } else {
-            filter->concurrent_insert(keys_start[i]);
-        }
+        filter->concurrent_insert(util::generate_random());
 
         if (i != 0 && i % interval == 0) {
             now = clock::now();
@@ -39,7 +35,7 @@ void insert_keys(zeno_bench::VZFC* filter, const uint64_t* keys_start, uint64_t 
     }
 }
 
-void query_keys(zeno_bench::VZFC* filter, const uint64_t* keys_start, uint64_t num_keys, 
+void query_keys(zeno_bench::VZF* filter, const uint64_t* keys_start, uint64_t num_keys, 
                  uint64_t interval, std::vector<uint64_t>& result, 
                  std::chrono::_V2::steady_clock::time_point start_time) {
     using clock = std::chrono::steady_clock;
@@ -47,8 +43,7 @@ void query_keys(zeno_bench::VZFC* filter, const uint64_t* keys_start, uint64_t n
 
     uint64_t i = 0;
     while (!stop_flag.load()) {
-        // filter->query(keys_start[i % num_keys]);
-        filter->query(util::generate_random());
+        filter->concurrent_query(util::generate_random());
 
         if (i != 0 && i % interval == 0) {
             now = clock::now();
@@ -56,6 +51,7 @@ void query_keys(zeno_bench::VZFC* filter, const uint64_t* keys_start, uint64_t n
             result.emplace_back(us_since_last_sample);
         }
         ++i;
+        i = i % num_keys;
     }
 }
 
@@ -187,7 +183,7 @@ int main(int argc, char** argv) {
     bool auto_resize = true;
     
     // Configure filter
-    zeno_bench::VZFC* filter = new zeno_bench::VZFC(qbits, qbits + fbits, 1, 12);
+    zeno_bench::VZF* filter = new zeno_bench::VZF(qbits, qbits + fbits, 1, 0.8);
     filter->auto_resize(auto_resize);
 
     // String for buffering results

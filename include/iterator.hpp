@@ -19,7 +19,7 @@ static constexpr uint64_t kMaxPosition = std::numeric_limits<uint64_t>::max();
 template <class T>
 class iterator {
     public:
-    iterator() = delete;
+    iterator() = default;
     iterator(T* filter, uint64_t position);
     iterator& operator=(const iterator& other) {
         filter_ = other.filter_;

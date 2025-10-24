@@ -7,7 +7,7 @@ namespace zeno_bench {
 
 class IZF : public Filter {
     public:
-    IZF(uint64_t exp_size, uint64_t hash_bits, uint64_t expansion_ratio=1, double threshold=0.8)
+    IZF(uint64_t exp_size, uint64_t hash_bits, uint64_t expansion_ratio=1, double threshold=0.9)
     : valid(true) {
         expansion_ratio_ = expansion_ratio;
         filter = new zeno::IZF(exp_size, hash_bits, 0, expansion_ratio, zeno::hashmode::Default, 0,
