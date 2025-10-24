@@ -9,35 +9,7 @@ endif()
 
 find_package(OpenSSL REQUIRED)
 
-option(RARRAY "Build zeno filter on resizable array" OFF)
-option(VMEM "Build zeno filter on virtual memory" OFF)
-option(RSQF "Build rank and select quotient filter" OFF)
 option(WIDENING "Build filter on the widening regime" OFF)
-option(BUILD_TESTS "Build unit tests" OFF)
-
-if(RARRAY AND VMEM)
-    message(FATAL_ERROR "Options RARRAY and VMEM are mutually exclusive. Please enable only one. ")
-endif()
-
-if(RSQF AND (RARRAY OR VMEM))
-    message(FATAL_ERROR "Options RSQF is not compatible with RARRAY or VMEM. ")
-endif()
-
-if(NOT RARRAY AND NOT VMEM AND FIXED)
-    message("Option FIXED will not take effect unless options RARRAY or VMEM are enabled. ")
-endif()
-
-if(RARRAY)
-    add_definitions(-DRARRAY)
-endif()
-
-if(VMEM)
-    add_definitions(-DVMEM)
-endif()
-
-if(RSQF)
-    add_definitions(-DRSQF)
-endif()
 
 if(WIDENING)
     add_definitions(-DWIDENING)
@@ -62,4 +34,3 @@ target_link_libraries(zeno INTERFACE OpenSSL::SSL)
 
 add_subdirectory(bench)
 add_subdirectory(examples)
-add_subdirectory(evaluations)
