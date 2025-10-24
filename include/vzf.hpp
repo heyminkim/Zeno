@@ -92,10 +92,7 @@ class VZF {
     int64_t grow(uint64_t dangling_hash, uint64_t dangling_count, uint8_t flags);
 
     /**
-     * Decreases the capacity of the underlying memory. The parameters are for a potential 
-     * 'dangling' hash; the hash that caused expansion will not have been inserted to the larger 
-     * filter. This function handles that case. 
-     * @param flags The original flag used for insertion. 
+     * Decreases the capacity of the underlying memory. 
      * @returns The number of reallocated entries. <= 0 if error. 
      */
     int64_t contract();
@@ -144,13 +141,10 @@ class VZF {
         return metadata_->hash_bits;
     }
     uint64_t get_memory_usage() const {
-        return metadata_->vmem_size_; // + sizeof(qfmetadata);
+        return metadata_->vmem_size_;
     }
     double get_space_amplification() const {
         return metadata_->space_amplification_;
-    }
-    void get_max_locked_region() const {
-        std::cerr << "max locked region " << runtimedata_->max_locked_region << std::endl;
     }
 
     // Checks whether the filter is expanding. 
@@ -176,107 +170,6 @@ class VZF {
 
     void breakpoint() const {
         return;
-    }
-
-    /**
-     * Reads all cluster lengths of the filter and inserts them to the result vector. 
-     * @param result The vector that stores the resulting cluster sizes. 
-     * @returns Nothing. 
-     */
-    void calculate_cluster(std::vector<uint64_t>& result) const {
-        uint64_t running_cluster_length = 0;
-        uint64_t current_runend_index = 0;
-        uint64_t current_index = 0;
-        while (true) {
-            if (current_index > metadata_->nslots) break;
-            if (!is_occupied(current_index)) {
-                ++current_index;
-                continue;
-            }
-            current_runend_index = run_end(current_index);
-            running_cluster_length += current_runend_index - current_index + 1;
-            for (uint64_t i = current_index + 1; i <= current_runend_index; ++i) {
-                if (!is_occupied(i)) continue;
-                else {
-                    uint64_t new_runend_index = run_end(i);
-                    running_cluster_length += new_runend_index - current_runend_index;
-                    current_runend_index = new_runend_index;
-                }
-            }
-            current_index = current_runend_index + 1;
-            result.push_back(running_cluster_length);
-            running_cluster_length = 0;
-        }
-    }
-
-    void calculate_runend_diff() {
-        uint64_t current_index = 0;
-        while (true) {
-            if (current_index > metadata_->nslots) break;
-            if (!is_occupied(current_index)) {
-                ++current_index;
-                continue;
-            }
-            uint64_t runend_true = run_end(current_index);
-            uint64_t runend_false;
-            int64_t current_region = current_index / kNumSlotsToLock;
-            int64_t last_region;
-            uint64_t clusterend_index;
-            int res = cluster_end_threadsafe(current_index, runend_false, last_region, clusterend_index, kWaitForLock);
-            
-            if (runend_true != runend_false) {
-                std::cout << "index : " << current_index << std::endl;
-                std::cout << "runendt " << runend_true << std::endl;
-                std::cout << "runendf " << runend_false << std::endl;
-                print_by_index(current_index);
-                print_lock_status();
-                abort();
-            }
-
-            for (uint64_t i = current_region; i <= last_region; ++i) zeno_unlock_region(i);
-
-            // print_lock_status();
-            for (uint64_t i = 0; i < runtimedata_->num_locks; ++i) {
-                // zeno_unlock_region(i);
-                if (is_region_locked(i)) {
-                    std::cout << "locked region : " << i << std::endl;
-                    abort();
-                }
-            }
-            ++current_index;
-        }
-    }
-
-    /**
-     * Reads all cluster lengths of the filter and inserts them to the result vector. Uses the 
-     * runend trick to make calculation faster. 
-     * @param result The vector that stores the resulting cluster sizes. 
-     * @returns Nothing. 
-     */
-    void calculate_cluster_runend(std::vector<uint64_t>& result) const {
-        uint64_t running_cluster_length = 0;
-        uint64_t current_runend_index = 0;
-        uint64_t current_index = 0; 
-        
-        while (true) {
-            if (current_index > metadata_->nslots) break;
-            if (!is_occupied(current_index)) {
-                ++current_index;
-                continue;
-            }
-            current_runend_index = run_end(current_index);
-            running_cluster_length += current_runend_index - current_index + 1;
-            
-            uint64_t new_runend_index = run_end(current_runend_index);
-            while (new_runend_index > current_runend_index) {
-                running_cluster_length += new_runend_index - current_runend_index;
-                current_runend_index = new_runend_index;
-                new_runend_index = run_end(current_runend_index);
-            }
-            current_index = current_runend_index + 1;
-            result.push_back(running_cluster_length);
-            running_cluster_length = 0;
-        }
     }
 
     private:
@@ -379,21 +272,9 @@ class VZF {
         char padding[kCacheLineSize - sizeof(spinlock)];
     };  // struct spinlock_padded
 
-    /**
-     * The below struct is used to instrument the code.
-     * It is not used in normal operations of the filter.
-     */
-    struct WaitTimeData {
-        uint64_t total_time_single;
-        uint64_t total_time_spinning;
-        uint64_t locks_taken;
-        uint64_t locks_acquired_single_attempt;
-    };  // struct WaitTimeData
-
     struct qfruntime {
         uint64_t num_locks;
         spinlock_padded* locks;
-        WaitTimeData* wait_times;
         // Locks required for reallocating spinlocks
         std::atomic<bool> resize_pending{false};
         std::shared_mutex spinlock_mutex;
@@ -435,13 +316,6 @@ class VZF {
         // of slots in the widening regime. 
         uint64_t num_expansions;
 #endif
-        /**
-         * MOD: metadata for resizable array
-         * The exponent of the RA size of this period. The initial RA size is (1 << exp_ra_size_) 
-         * and the RA size of the next epoch is (1 << exp_ra_size_) * 2^{1/r}. The value of 
-         * `exp_ra_size_` increases by 1 on each period. 
-         */
-        uint64_t exp_ra_size_; 
         /* The reciprocal ratio of filter expansion. */
         uint64_t reciprocal_ratio_; 
         /**
@@ -449,32 +323,11 @@ class VZF {
          * filter size becomes the next power of 2 regardless of the multiplicative result. 
          */
         double expansion_ratio_; 
-        /**
-         * The accumulated expansion ratio up to this epoch. This value returns to zero when a 
-         * period terminates. Used for multiplying the index to the correct index and also for 
-         * recalculating the original index on expansion.
-         * TODO: At the end of a period, if multiplying the index directly with `expansion_ratio_` 
-         * doesn't generate bugs (i.e., not being power of 2) this variable can be removed. 
-         * Otherwise, the index at an epoch should be divided by this value to get the original hash
-         * and multiplied by 2 to get the correct slot address. 
-         */
         /* Space amplification after each expansion */
         double space_amplification_;
         double multiplicative_ratio_;
-        /**
-         * The exponent of the size of a single slot of the datablock. Given an index, a lookup 
-         * slices the lower `exp_db_size_` bits from the index for internal lookup. 
-         */
-        // TODO: may not need this?
-        uint64_t exp_db_size_; // = QF_BLOCK_OFFSET_BITS + EXP_NUM_QF_PER_UNIT
         /* Current epoch of expansion. Rolls back to 0 when it reaches the reciprocal ratio. */
         uint64_t current_epoch_;
-        /**
-         * Total number of entries in the array. Intentionally defined as a double, because if 
-         * `expansion_ratio_` is too small, casting the multiplicative result against 
-         * `expansion_ratio_` to uint64_t might lose the values under the decimal. 
-         */
-        double current_size_; // = 0
         /* Is the current epoch a power of 2? */
         bool is_period_;
         /* Amount of allocated memory via vmem. */
@@ -494,15 +347,6 @@ class VZF {
     qfruntime*  runtimedata_;
     qfmetadata* metadata_;
     qfblock*    blocks_;
-
-    /**
-     * The below struct is used to instrument the code.
-     * It is not used in normal operations of Zeno filter.
-     */
-    struct ClusterData {
-        uint64_t start_index;
-        uint16_t length;
-    };  // struct ClusterData
 
     ////////////////////////////////////
     // Modification helper functions. //
@@ -600,39 +444,6 @@ class VZF {
 #endif
 
     /**
-     * Given a superblock index, calculates the number of preceding data blocks. 
-     * @param k The superblock index. 
-     * @returns The number of data blocks preceding the superblock. 
-     */
-    uint64_t calculate_A(const uint64_t& k) const;
-
-    struct indexABC {
-        uint64_t superblock_index;
-        uint64_t datablock_index;
-        uint64_t element_index;
-
-        indexABC(uint64_t a, uint64_t b, uint64_t c) :
-            superblock_index(a), datablock_index(b), element_index(c)
-        {}
-
-        void print() const {
-            std::cout << "superblock index : " << superblock_index << " , " << \
-                         "datablock index : " << datablock_index << " , " << \
-                         "element index : " << element_index << std::endl;
-        }
-    };
-
-    /**
-     * Given an index, calculates the superblock index, data block index, and the element index 
-     * within the data block. 
-     * @note The function assumes the input `index` is an index that is at the granularity of an 
-     * unit of the resizable array. The caller must adjust the `index` accordingly. 
-     * @param index The index that we wish to calculate the additional index of.
-     * @returns indexABC that holds the relevant index information. 
-     */
-    const indexABC entry_lookup_internal(const uint64_t& index) const;
-
-    /**
      * Calculates the smallest power of 2 greater than `value`. 
      * @param value The number for which the next power of 2 will be computed.
      * @returns The next power of 2 if `value` is not already a power of 2. If `value` is already a 
@@ -682,12 +493,6 @@ class VZF {
         }
         return false;
     }
-
-    /**
-     * Tries to acquire a lock once and return even if the lock is busy. Used for normal operations 
-     * of the inserting thread. If spin flag is set, waits until the spinloc
-     * 
-     */
 
     /**
      * Unlock the acquired lock.
@@ -864,26 +669,6 @@ class VZF {
     //////////////////////////////////
     // Hash manipulation functions. //
     //////////////////////////////////
-
-    /**
-     * Inserts an unary delimiter at the end of the hash. For example, if the given hash is 64 bits 
-     * and quotient_bits = 4 and bits_per_slot = 4, then
-     *  qqqq ffff xxxx....xxxx
-     * | qb | fp |  64-8 bits |
-     * The resulting hash will be the original hash shifted to the lower bits with an unary 
-     * delimiter at the end:
-     *  0000....0000 qqqq ffff 1
-     * |  64-7 bits | qb | fp |d|
-     * The shifting to the lower bits is done because the internal functions `insert1` and `insertN`
-     * assumes the hash to be in the lower bits. 
-     * @deprecated Use `insert_unary` instead. 
-     * @param hash The hash of a key. 
-     */
-    inline
-    void insert_unary_deprecated(uint64_t& hash) const {
-        // The last bit is converted to a unary counter by doing an `OR` with 1. 
-        hash = hash >> (64ULL - metadata_->hash_bits) | 1ULL;
-    }
 
     /**
      * Inserts an unary delimeter in between the index bits and the remainder
@@ -1161,10 +946,7 @@ class VZF {
         return metadata_->nslots;
     }
 	uint64_t count_occupied_slots() const {
-        // metadata_->pc_noccupied_slots.sync();
         return metadata_->pc_noccupied_slots.get_counter();
-        // return metadata_->noccupied_slots;
-        // return metadata_->atomic_noccupied_slots;
     }
 
     // Bit size info
@@ -1191,11 +973,8 @@ class VZF {
     // Debugging functions. //
     //////////////////////////
 
-    void debug_dump_block() const;
-
     /** 
-     * Prints the contents of the current occupieds and runends from a given
-     * index. 
+     * Prints the contents of the current occupieds and runends from a given index. 
      */
     void print_from_index(const uint64_t& index) const {
         std::cout << "=================================" << std::endl;
@@ -1235,33 +1014,6 @@ class VZF {
         }
         std::cout << "---------------------------------" << std::endl;
         std::cout << std::endl;
-    }
-
-    public:
-    /**
-     * Prints the current status of runtime locks. 
-     * @warning This method is not thread-safe. If this method is called while the lock is being
-     * resized, it will cause undefined behavior (most likely a segfault). 
-     */
-    void print_lock_status(bool verbose=false) const {
-        std::cout << "printing" << std::endl;
-        if (!verbose) {
-            for (uint64_t zz = 0; zz < runtimedata_->num_locks; ++zz) {
-                if (runtimedata_->locks[zz].lock_.lock_.load(std::memory_order_acquire)) {
-                    std::cout << zz << " :: locked" << std::endl;
-                }
-            }
-        } else {
-            for (uint64_t zz = 0; zz < runtimedata_->num_locks; ++zz) {
-                if (runtimedata_->locks[zz].lock_.lock_.load(std::memory_order_acquire)) {
-                    std::cout << zz << " :: locked" << std::endl;
-                } 
-                else {
-                    std::cout << zz << " :: unlocked" << std::endl;
-                }
-            }
-        }
-        std::cout << "printing finished" << std::endl;
     }
 
 };  // class VZF
@@ -1319,12 +1071,9 @@ VZF::VZF(uint64_t exp_size, uint64_t hash_bits, uint64_t value_bits,
     metadata_->num_expansions = 0;
 #endif
 
-    metadata_->exp_db_size_ = kBlockOffsetBits + kUnitOffsetBits;   // = 12
     metadata_->reciprocal_ratio_ = reciprocal_ratio;
     metadata_->expansion_ratio_ = pow(2., 1./(double)(reciprocal_ratio));
     metadata_->multiplicative_ratio_ = 1.0;
-    metadata_->exp_ra_size_ = exp_size - metadata_->exp_db_size_;
-    metadata_->current_size_ = (double)(1ULL << metadata_->exp_ra_size_);
     metadata_->current_epoch_ = 0ULL;
     metadata_->space_amplification_ = 0;
 
@@ -1338,27 +1087,15 @@ VZF::VZF(uint64_t exp_size, uint64_t hash_bits, uint64_t value_bits,
         perror("mmap failed for initialization.");
         exit(1);
     }
-    // std::cout << "blocks address : " << blocks_ << std::endl;
-    // malloc implementation
-    // blocks_ = (qfblock*)malloc(current_vmem_size);
-    // if (blocks_ == nullptr) {
-    //     std::cerr << "malloc failed for initialization." << std::endl;
-    //     abort();
-    // }
 
     metadata_->vmem_size_ = current_vmem_size;
     metadata_->is_period_ = true;
     
     runtimedata_ = new qfruntime;
     runtimedata_->num_locks = (metadata_->xnslots / kNumSlotsToLock) + 2;
-    // runtimedata_->locks = new spinlock_padded[runtimedata_->num_locks]{};
     size_t lock_bytes = runtimedata_->num_locks * sizeof(spinlock_padded);
     runtimedata_->locks = (spinlock_padded*)malloc(lock_bytes);
     if (runtimedata_->locks) memset(runtimedata_->locks, 0, lock_bytes);
-#ifdef LOG_WAIT_TIME
-    runtimedata_->wait_times = reinterpret_cast<WaitTimeData *>
-                               (new WaitTimeData[runtimedata->num_locks + 1]{});
-#endif
 }
 
 inline VZF::~VZF() {
@@ -1399,8 +1136,6 @@ int VZF::insert(uint64_t key, uint64_t value, uint64_t count, uint8_t flags) {
 
             if (GET_NO_LOCK(flags) == kNoLock && GET_IS_FILTER_GROWING(flags) != kIsFilterGrowing) {
                 grow_ret = grow(0, 0, flags);
-            // The change may cause errors in concurrency
-            // else {
             } else if (GET_NO_LOCK(flags) != kNoLock && GET_IS_FILTER_GROWING(flags) != kIsFilterGrowing) {
                 int64_t expected_region = -1;
                 int64_t max_region = (metadata_->nslots - 1) / kNumSlotsToLock;
@@ -1425,8 +1160,6 @@ int VZF::insert(uint64_t key, uint64_t value, uint64_t count, uint8_t flags) {
             }
         }
         else {
-            // std::cout << "noccs : " << count_occupied_slots() << std::endl;
-            // std::cout << "thld  : " << metadata_->nslots * metadata_->expansion_threshold << std::endl;
             return kErrNoSpace;
         }
     }
@@ -1434,7 +1167,6 @@ int VZF::insert(uint64_t key, uint64_t value, uint64_t count, uint8_t flags) {
     if (count == 0) return 0;
 
     if (GET_NO_LOCK(flags) != kNoLock) {
-        // while (runtimedata_->resize_pending.load(std::memory_order_acquire)) {
         while (runtimedata_->resizing_region.load(std::memory_order_acquire) == 0) {
             std::this_thread::yield();
         }
@@ -1463,7 +1195,7 @@ int VZF::insert(uint64_t key, uint64_t value, uint64_t count, uint8_t flags) {
 
     // check for fullness based on the distance from the home slot to the slot
     // in which the key is inserted
-    if (ret == kErrNoSpace ) { // || ret > kDistanceFromHomeSlotCutoff
+    if (ret == kErrNoSpace ) {
         float load_factor = count_occupied_slots() / (float)metadata_->nslots;
         if (metadata_->auto_resize) {
             fprintf(stdout, "Resizing filter...\n");
@@ -1558,8 +1290,6 @@ int64_t VZF::grow(uint64_t dangling_hash, uint64_t dangling_count, uint8_t flags
         next_nslots = calculateNextPowerOf2(next_nslots);
         metadata_->current_epoch_ = 0;
         period_terminates = true;
-        // TODO: is this necessary?
-        metadata_->exp_ra_size_ += 1;
     } else {
         multiply_by = divide_by * metadata_->expansion_ratio_;
     }
@@ -2362,7 +2092,6 @@ int64_t VZF::grow(uint64_t dangling_hash, uint64_t dangling_count, uint8_t flags
 
         for (uint64_t l = 0; l < runtimedata_->num_locks; ++l) {
             while (runtimedata_->locks[l].lock_.lock_.load(std::memory_order_acquire)) {
-                // print_lock_status();
                 std::this_thread::yield();
             }
         }
@@ -3797,22 +3526,6 @@ inline int VZF::remove_internal(uint64_t hash, uint64_t count, uint8_t runtime_l
     }
 
     return ret_numfreedslots;
-}
-
-inline
-uint64_t VZF::calculate_A(const uint64_t& k) const {
-    return (1ULL << (k >> 1ULL)) * (2ULL + (k & 1ULL)) - 2ULL;
-}
-
-inline
-const VZF::indexABC VZF::entry_lookup_internal(const uint64_t& index) const {
-    const uint64_t j = index + 1;
-    uint64_t k = 64 - __builtin_clzll(j) - 1;
-    uint64_t floor_k = (k >> 1), mask_up = (1ULL << floor_k) - 1;
-    uint64_t ceil_k = ((k + 1) >> 1), mask_low = (1ULL << ceil_k) - 1;
-    return indexABC(
-        calculate_A(k), ((j >> ceil_k) & mask_up), (j & mask_low)
-    );
 }
 
 inline bool VZF::zeno_lock(uint64_t hash_bucket_index, 

@@ -121,15 +121,6 @@ class IZF {
      */
     uint64_t query(uint64_t key, uint64_t& value, uint8_t flags);
 
-    /**
-     * Lookup the value associated with key. Returns the count of that key/value pair in Zeno.
-     * @param key The query key. 
-     * @param value Holder for the associated value. 
-     * @param flags Flags determining the filter's behavior under concurrency, as well as if the 
-     * prefix is already hashed or not.
-     */
-    uint64_t concurrent_query(uint64_t key, uint64_t& value, uint8_t flags);
-
     // Hashing info
     hashmode get_hashmode() const {
         return metadata_->hash_mode;
@@ -148,9 +139,6 @@ class IZF {
     }
     double get_space_amplification() const {
         return metadata_->space_amplification_;
-    }
-    void get_max_locked_region() const {
-        std::cerr << "max locked region " << runtimedata_->max_locked_region << std::endl;
     }
 
     // Checks whether the filter is expanding. 
@@ -172,111 +160,6 @@ class IZF {
 
     void print_by_index(uint64_t index) const {
         print_from_index(index);
-    }
-
-    void breakpoint() const {
-        return;
-    }
-
-    /**
-     * Reads all cluster lengths of the filter and inserts them to the result vector. 
-     * @param result The vector that stores the resulting cluster sizes. 
-     * @returns Nothing. 
-     */
-    void calculate_cluster(std::vector<uint64_t>& result) const {
-        uint64_t running_cluster_length = 0;
-        uint64_t current_runend_index = 0;
-        uint64_t current_index = 0;
-        while (true) {
-            if (current_index > metadata_->nslots) break;
-            if (!is_occupied(current_index)) {
-                ++current_index;
-                continue;
-            }
-            current_runend_index = run_end(current_index);
-            running_cluster_length += current_runend_index - current_index + 1;
-            for (uint64_t i = current_index + 1; i <= current_runend_index; ++i) {
-                if (!is_occupied(i)) continue;
-                else {
-                    uint64_t new_runend_index = run_end(i);
-                    running_cluster_length += new_runend_index - current_runend_index;
-                    current_runend_index = new_runend_index;
-                }
-            }
-            current_index = current_runend_index + 1;
-            result.push_back(running_cluster_length);
-            running_cluster_length = 0;
-        }
-    }
-
-    void calculate_runend_diff() {
-        uint64_t current_index = 0;
-        while (true) {
-            if (current_index > metadata_->nslots) break;
-            if (!is_occupied(current_index)) {
-                ++current_index;
-                continue;
-            }
-            uint64_t runend_true = run_end(current_index);
-            uint64_t runend_false;
-            int64_t current_region = current_index / kNumSlotsToLock;
-            int64_t last_region;
-            uint64_t clusterend_index;
-            int res = cluster_end_threadsafe(current_index, runend_false, last_region, clusterend_index, kWaitForLock);
-            
-            if (runend_true != runend_false) {
-                std::cout << "index : " << current_index << std::endl;
-                std::cout << "runendt " << runend_true << std::endl;
-                std::cout << "runendf " << runend_false << std::endl;
-                print_by_index(current_index);
-                print_lock_status();
-                abort();
-            }
-
-            for (uint64_t i = current_region; i <= last_region; ++i) zeno_unlock_region(i);
-
-            // print_lock_status();
-            for (uint64_t i = 0; i < runtimedata_->num_locks; ++i) {
-                // zeno_unlock_region(i);
-                if (is_region_locked(i)) {
-                    std::cout << "locked region : " << i << std::endl;
-                    abort();
-                }
-            }
-            ++current_index;
-        }
-    }
-
-    /**
-     * Reads all cluster lengths of the filter and inserts them to the result vector. Uses the 
-     * runend trick to make calculation faster. 
-     * @param result The vector that stores the resulting cluster sizes. 
-     * @returns Nothing. 
-     */
-    void calculate_cluster_runend(std::vector<uint64_t>& result) const {
-        uint64_t running_cluster_length = 0;
-        uint64_t current_runend_index = 0;
-        uint64_t current_index = 0; 
-        
-        while (true) {
-            if (current_index > metadata_->nslots) break;
-            if (!is_occupied(current_index)) {
-                ++current_index;
-                continue;
-            }
-            current_runend_index = run_end(current_index);
-            running_cluster_length += current_runend_index - current_index + 1;
-            
-            uint64_t new_runend_index = run_end(current_runend_index);
-            while (new_runend_index > current_runend_index) {
-                running_cluster_length += new_runend_index - current_runend_index;
-                current_runend_index = new_runend_index;
-                new_runend_index = run_end(current_runend_index);
-            }
-            current_index = current_runend_index + 1;
-            result.push_back(running_cluster_length);
-            running_cluster_length = 0;
-        }
     }
 
     private:
@@ -433,21 +316,9 @@ class IZF {
         char padding[kCacheLineSize - sizeof(spinlock)];
     };  // struct spinlock_padded
 
-    /**
-     * The below struct is used to instrument the code.
-     * It is not used in normal operations of the filter.
-     */
-    struct WaitTimeData {
-        uint64_t total_time_single;
-        uint64_t total_time_spinning;
-        uint64_t locks_taken;
-        uint64_t locks_acquired_single_attempt;
-    };  // struct WaitTimeData
-
     struct qfruntime {
         uint64_t num_locks;
         spinlock_padded* locks;
-        WaitTimeData* wait_times;
         // Locks required for reallocating spinlocks
         std::atomic<bool> resize_pending{false};
         std::shared_mutex spinlock_mutex;
@@ -505,15 +376,6 @@ class IZF {
          * filter size becomes the next power of 2 regardless of the multiplicative result. 
          */
         double expansion_ratio_; 
-        /**
-         * The accumulated expansion ratio up to this epoch. This value returns to zero when a 
-         * period terminates. Used for multiplying the index to the correct index and also for 
-         * recalculating the original index on expansion.
-         * TODO: At the end of a period, if multiplying the index directly with `expansion_ratio_` 
-         * doesn't generate bugs (i.e., not being power of 2) this variable can be removed. 
-         * Otherwise, the index at an epoch should be divided by this value to get the original hash
-         * and multiplied by 2 to get the correct slot address. 
-         */
         /* Space amplification after each expansion */
         double space_amplification_;
         double multiplicative_ratio_;
@@ -521,7 +383,6 @@ class IZF {
          * The exponent of the size of a single slot of the datablock. Given an index, a lookup 
          * slices the lower `exp_db_size_` bits from the index for internal lookup. 
          */
-        // TODO: may not need this?
         uint64_t exp_db_size_; // = QF_BLOCK_OFFSET_BITS + EXP_NUM_QF_PER_UNIT
         /* Current epoch of expansion. Rolls back to 0 when it reaches the reciprocal ratio. */
         uint64_t current_epoch_;
@@ -561,15 +422,6 @@ class IZF {
 
     /* The index block that serves as a directory for data blocks. */
     std::vector<qfblock*> index_block_;
-
-    /**
-     * The below struct is used to instrument the code.
-     * It is not used in normal operations of Zeno filter.
-     */
-    struct ClusterData {
-        uint64_t start_index;
-        uint16_t length;
-    };  // struct ClusterData
 
     ////////////////////////////////////
     // Modification helper functions. //
@@ -751,12 +603,6 @@ class IZF {
         }
         return false;
     }
-
-    /**
-     * Tries to acquire a lock once and return even if the lock is busy. Used for normal operations 
-     * of the inserting thread. If spin flag is set, waits until the spinloc
-     * 
-     */
 
     /**
      * Unlock the acquired lock.
@@ -1318,34 +1164,6 @@ class IZF {
         std::cout << "---------------------------------" << std::endl;
         std::cout << std::endl;
     }
-
-    public:
-    /**
-     * Prints the current status of runtime locks. 
-     * @warning This method is not thread-safe. If this method is called while the lock is being
-     * resized, it will cause undefined behavior (most likely a segfault). 
-     */
-    void print_lock_status(bool verbose=false) const {
-        std::cout << "printing" << std::endl;
-        if (!verbose) {
-            for (uint64_t zz = 0; zz < runtimedata_->num_locks; ++zz) {
-                if (runtimedata_->locks[zz].lock_.lock_.load(std::memory_order_acquire)) {
-                    std::cout << zz << " :: locked" << std::endl;
-                }
-            }
-        } else {
-            for (uint64_t zz = 0; zz < runtimedata_->num_locks; ++zz) {
-                if (runtimedata_->locks[zz].lock_.lock_.load(std::memory_order_acquire)) {
-                    std::cout << zz << " :: locked" << std::endl;
-                } 
-                else {
-                    std::cout << zz << " :: unlocked" << std::endl;
-                }
-            }
-        }
-        std::cout << "printing finished" << std::endl;
-    }
-
 };  // class IZF
 
 IZF::IZF(uint64_t exp_size, uint64_t hash_bits, uint64_t value_bits, 
@@ -1455,10 +1273,6 @@ IZF::IZF(uint64_t exp_size, uint64_t hash_bits, uint64_t value_bits,
     size_t lock_bytes = runtimedata_->num_locks * sizeof(spinlock_padded);
     runtimedata_->locks = (spinlock_padded*)malloc(lock_bytes);
     if (runtimedata_->locks) memset(runtimedata_->locks, 0, lock_bytes);
-#ifdef LOG_WAIT_TIME
-    runtimedata_->wait_times = reinterpret_cast<WaitTimeData *>
-                               (new WaitTimeData[runtimedata->num_locks + 1]{});
-#endif
 }
 
 inline IZF::~IZF() {
@@ -1650,7 +1464,6 @@ int64_t IZF::grow(uint64_t dangling_hash, uint64_t dangling_count, uint8_t flags
         next_nslots = calculateNextPowerOf2(next_nslots);
         metadata_->current_epoch_ = 0;
         period_terminates = true;
-        // TODO: is this necessary?
         metadata_->exp_ra_size_ += 1;
     } else {
         multiply_by = divide_by * metadata_->expansion_ratio_;
@@ -2867,33 +2680,6 @@ uint64_t IZF::query(uint64_t key, uint64_t& value, uint8_t flags) {
     }
 
     return 0;
-}
-
-uint64_t IZF::concurrent_query(uint64_t key, uint64_t& value, uint8_t flags) {
-    uint64_t original_key;
-    if (GET_KEY_HASH(flags) != kKeyIsHash) {
-        if (metadata_->hash_mode == hashmode::Default) {
-            // Use the upper `hash_bit` bits of the hashed result
-            original_key = MurmurHash64A((void*)&key, sizeof(key), metadata_->seed);
-            key = (original_key >> (64ULL - metadata_->hash_bits));
-        }
-        else if (metadata_->hash_mode == hashmode::Invertible)
-            key = hash_64(key, BITMASK(metadata_->hash_bits));
-        if (!metadata_->is_period_) sanitize_hash(key);
-    }
-    uint64_t count = query(key, value, kWaitForLock | kKeyIsHash);
-    if (flags & kWaitForLock) {
-        if (count == 0 && runtimedata_->resizing_region.load(std::memory_order_acquire) >= 0) {
-            // query again
-            key = original_key >> (64ULL - metadata_->hash_bits - 1);
-            // count = query(key, value, kWaitForLock | kKeyIsHash | kSecondTryLock);
-            return count;
-        } else {
-            return count;
-        }
-    } else {
-        return count;
-    }
 }
 
 inline

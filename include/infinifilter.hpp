@@ -201,60 +201,6 @@ class InfiniFilter {
 
     private:
     friend class iterator<InfiniFilter>;
-    /** 
-     * Class for computing fixed point operations. The results are always automatically converted to 
-     * uint64_t. 
-     */
-#if defined(FIXED)
-    class FixedPoint {
-        public:
-        static constexpr int kFractionalBits = 20;
-        static constexpr uint64_t kScalingFactor = 1ULL << kFractionalBits;
-        static constexpr uint64_t kBitMask = BITMASK(kFractionalBits);
-
-        FixedPoint() = default;
-        FixedPoint(double d) :
-            value(static_cast<uint64_t>(d * kScalingFactor)),
-            reciprocal(static_cast<uint64_t>((1./d) * kScalingFactor)) {}
-        
-        FixedPoint operator*(const double& other) const {
-            return FixedPoint(to_double() * other);
-        }
-        
-        FixedPoint operator*(const FixedPoint& other) const {
-            return FixedPoint(to_double() * other.to_double());
-        }
-
-        FixedPoint& operator*=(const double& other) {
-            FixedPoint fp = FixedPoint(to_double() * other);
-            value = fp.value;
-            reciprocal = fp.reciprocal;
-
-            return *this;
-        }
-        
-        uint64_t operator*(const uint64_t& other) const {
-            return (value * other) >> kFractionalBits;  // floor
-        }
-
-        uint64_t operator/(const uint64_t& other) const {
-            return (reciprocal * other) >> kFractionalBits;
-        }
-
-        friend uint64_t operator/(uint64_t lhs, const FixedPoint& rhs) {
-            return (lhs * rhs.reciprocal + rhs.kBitMask) >> rhs.kFractionalBits;
-        }
-
-        uint64_t get_raw_value() const { return value; }
-        double to_double() const { 
-            return static_cast<double>(value) / kScalingFactor; 
-        }
-
-        private:
-        uint64_t value;         // used for multiplication
-        uint64_t reciprocal;    // used for division
-    };  // class FixedPoint
-#endif
 
     static constexpr uint64_t kDistanceFromHomeSlotCutoff = 1000;
     static constexpr uint64_t kMagicNumber = 1018874902021329732;
@@ -353,21 +299,9 @@ class InfiniFilter {
         char padding[kCacheLineSize - sizeof(spinlock)];
     };  // struct spinlock_padded
 
-    /**
-     * The below struct is used to instrument the code.
-     * It is not used in normal operations of the filter.
-     */
-    struct WaitTimeData {
-        uint64_t total_time_single;
-        uint64_t total_time_spinning;
-        uint64_t locks_taken;
-        uint64_t locks_acquired_single_attempt;
-    };  // struct WaitTimeData
-
     struct qfruntime {
         uint64_t num_locks;
         spinlock_padded* locks;
-        WaitTimeData* wait_times;
         // Locks required for reallocating spinlocks
         std::atomic<bool> resize_pending{false};
         std::shared_mutex spinlock_mutex;
@@ -576,12 +510,6 @@ class InfiniFilter {
         }
         return false;
     }
-
-    /**
-     * Tries to acquire a lock once and return even if the lock is busy. Used for normal operations 
-     * of the inserting thread. If spin flag is set, waits until the spinloc
-     * 
-     */
 
     /**
      * Unlock the acquired lock.
@@ -1034,33 +962,6 @@ class InfiniFilter {
         std::cout << std::endl;
     }
 
-    public:
-    /**
-     * Prints the current status of runtime locks. 
-     * @warning This method is not thread-safe. If this method is called while the lock is being
-     * resized, it will cause undefined behavior (most likely a segfault). 
-     */
-    void print_lock_status(bool verbose=false) const {
-        std::cout << "printing" << std::endl;
-        if (!verbose) {
-            for (uint64_t zz = 0; zz < runtimedata_->num_locks; ++zz) {
-                if (runtimedata_->locks[zz].lock_.lock_.load(std::memory_order_acquire)) {
-                    std::cout << zz << " :: locked" << std::endl;
-                }
-            }
-        } else {
-            for (uint64_t zz = 0; zz < runtimedata_->num_locks; ++zz) {
-                if (runtimedata_->locks[zz].lock_.lock_.load(std::memory_order_acquire)) {
-                    std::cout << zz << " :: locked" << std::endl;
-                } 
-                else {
-                    std::cout << zz << " :: unlocked" << std::endl;
-                }
-            }
-        }
-        std::cout << "printing finished" << std::endl;
-    }
-
 };  // class Zeno
 
 InfiniFilter::InfiniFilter(uint64_t exp_size, uint64_t hash_bits, hashmode hash_mode, uint32_t seed, 
@@ -1398,119 +1299,6 @@ int64_t InfiniFilter::grow(uint64_t dangling_hash, uint64_t dangling_count, uint
         hash = adjust_fingerprint_length(canonical_slot, fingerprint);
 
         int ret = new_filter.insert(hash, value, dangling_count, kNoLock | kKeyIsHash);
-        if (ret < 0) {
-            std::cerr << "Failed to insert key: " << hash << " into the new filter." << std::endl;
-            return ret;
-        }
-        ++ret_numkeys;
-    }
-
-    delete[] runtimedata_->locks;
-    delete runtimedata_;
-    delete metadata_;
-    delete blocks_;
-    *this = std::move(new_filter);
-
-    return ret_numkeys;
-}
-
-int64_t InfiniFilter::contract() {
-    InfiniFilter new_filter(metadata_->quotient_bits - 1, 
-                     metadata_->hash_bits - 1,
-                     metadata_->hash_mode, metadata_->seed);
-    new_filter.set_auto_resize(true);
-
-    uint64_t fingerprint, hash, value, count, quotient;
-    int64_t ret_numkeys = 0;
-    int32_t status = 0;
-    iterator<InfiniFilter> it(this, 0);
-    int ret;
-
-    uint64_t canonical_slot;
-
-    uint64_t A = BITMASK(metadata_->fingerprint_bits);
-    uint64_t B = A - 1;
-
-    if (secondary_filter_) {
-        while (!deletion_queue_.empty()) {
-            // deleted canonical slot
-            uint64_t deleted_cs = deletion_queue_.front();
-            deletion_queue_.pop();
-            uint64_t log_copies = secondary_filter_->query_mother_hash(deleted_cs);
-            uint64_t copies = 1ULL << log_copies;
-            uint64_t old_cs_length = metadata_->quotient_bits - log_copies;
-            uint64_t base_cs = deleted_cs & BITMASK(old_cs_length);
-            for (uint64_t c = 0; c < copies; ++c) {
-                uint64_t cs_to_delete = (c << old_cs_length) | base_cs;
-                uint64_t hash_to_delete;
-                if (cs_to_delete == deleted_cs) {
-                    hash_to_delete = (A << metadata_->quotient_bits) | cs_to_delete;
-                } else {
-                    hash_to_delete = (B << metadata_->quotient_bits) | cs_to_delete;
-                }
-                remove_void_internal(hash_to_delete, 1, kNoLock | kKeyIsHash);
-            }
-            secondary_filter_->remove(deleted_cs, 0, 1, kNoLock | kKeyIsHash);
-        }
-    
-        // Remove void entries by referring to the secondary hash table
-        iterator<InfiniFilter> sit(secondary_filter_, 0);
-
-        uint64_t dist = secondary_filter_->metadata_->quotient_bits - 1 /*takes f-1 exp. to be void*/
-                      - (metadata_->quotient_bits - metadata_->fingerprint_bits);
-        for (; sit.is_valid(); ++sit) {
-            canonical_slot = sit.get_canonical_slot();
-            sit.get_entry(fingerprint, value, count);
-            uint64_t void_hash = (fingerprint << secondary_filter_->metadata_->quotient_bits) | canonical_slot;
-            
-            uint64_t p = __builtin_clzll((~fingerprint)
-                       << (64 - secondary_filter_->metadata_->bits_per_slot));
-            // void entries are alive
-            if (dist > p) continue;
-            uint64_t log_copies = p - dist;
-            uint64_t copies = 1ULL << log_copies;
-            // uint64_t old_cs_length = metadata_->quotient_bits - log_copies;
-            uint64_t valid_hash_bits = metadata_->quotient_bits - log_copies;
-                                    //  - 1 /*0 in unary bit is not calculated in p*/;
-
-            /**
-             * old_cs_length = qbits - log_copies = qbits - p + dist
-             *               = qbits - p + sqbits - 1 - qbits + fbits
-             *               = sqbits - p - 1 + fbits
-             * valid_hash_bits = shash_bits - p - 1 
-             *               = sqbits + fbits - p - 1
-             * old_cs_length = valid_hash_bits
-             */
-            // uint64_t valid_hash_bits = secondary_filter_->metadata_->hash_bits - p - 1;
-            void_hash = void_hash & BITMASK(valid_hash_bits);
-            
-            for (uint64_t c = 0; c < copies; ++c) {
-                uint64_t cs_to_delete = (c << valid_hash_bits) | void_hash;
-                uint64_t hash_to_delete = (B << (log_copies + valid_hash_bits)) | cs_to_delete;
-                // remove_void_internal(hash_to_delete, count, kNoLock | kKeyIsHash);
-                if (log_copies && (c & 1)) {
-                    uint64_t new_unary = (c >> 1);
-                    cs_to_delete = (new_unary << valid_hash_bits) | void_hash;
-                    hash_to_delete = (B << (log_copies - 1 + valid_hash_bits)) | cs_to_delete;
-                    new_filter.insert(hash_to_delete, 0, count, kNoLock | kKeyIsHash);
-                } else if (log_copies == 0) {
-                    hash_to_delete &= BITMASK(new_filter.metadata_->hash_bits);
-                    new_filter.insert(hash_to_delete, 0, count, kNoLock | kKeyIsHash);
-                }
-            }
-        }
-    }
-
-    for (; it.is_valid(); ++it) {
-        canonical_slot = it.get_canonical_slot();
-        it.get_entry(fingerprint, value, count);
-        if (fingerprint == B) {
-            ++it;
-            continue;
-        }
-
-        hash = extend_fingerprint_length(canonical_slot, fingerprint);
-        ret = new_filter.insert(hash, value, count, kNoLock | kKeyIsHash);
         if (ret < 0) {
             std::cerr << "Failed to insert key: " << hash << " into the new filter." << std::endl;
             return ret;

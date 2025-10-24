@@ -198,60 +198,6 @@ class Aleph {
 
     private:
     friend class iterator<Aleph>;
-    /** 
-     * Class for computing fixed point operations. The results are always automatically converted to 
-     * uint64_t. 
-     */
-#if defined(FIXED)
-    class FixedPoint {
-        public:
-        static constexpr int kFractionalBits = 20;
-        static constexpr uint64_t kScalingFactor = 1ULL << kFractionalBits;
-        static constexpr uint64_t kBitMask = BITMASK(kFractionalBits);
-
-        FixedPoint() = default;
-        FixedPoint(double d) :
-            value(static_cast<uint64_t>(d * kScalingFactor)),
-            reciprocal(static_cast<uint64_t>((1./d) * kScalingFactor)) {}
-        
-        FixedPoint operator*(const double& other) const {
-            return FixedPoint(to_double() * other);
-        }
-        
-        FixedPoint operator*(const FixedPoint& other) const {
-            return FixedPoint(to_double() * other.to_double());
-        }
-
-        FixedPoint& operator*=(const double& other) {
-            FixedPoint fp = FixedPoint(to_double() * other);
-            value = fp.value;
-            reciprocal = fp.reciprocal;
-
-            return *this;
-        }
-        
-        uint64_t operator*(const uint64_t& other) const {
-            return (value * other) >> kFractionalBits;  // floor
-        }
-
-        uint64_t operator/(const uint64_t& other) const {
-            return (reciprocal * other) >> kFractionalBits;
-        }
-
-        friend uint64_t operator/(uint64_t lhs, const FixedPoint& rhs) {
-            return (lhs * rhs.reciprocal + rhs.kBitMask) >> rhs.kFractionalBits;
-        }
-
-        uint64_t get_raw_value() const { return value; }
-        double to_double() const { 
-            return static_cast<double>(value) / kScalingFactor; 
-        }
-
-        private:
-        uint64_t value;         // used for multiplication
-        uint64_t reciprocal;    // used for division
-    };  // class FixedPoint
-#endif
 
     static constexpr uint64_t kDistanceFromHomeSlotCutoff = 1000;
     static constexpr uint64_t kMagicNumber = 1018874902021329732;
@@ -350,21 +296,9 @@ class Aleph {
         char padding[kCacheLineSize - sizeof(spinlock)];
     };  // struct spinlock_padded
 
-    /**
-     * The below struct is used to instrument the code.
-     * It is not used in normal operations of the filter.
-     */
-    struct WaitTimeData {
-        uint64_t total_time_single;
-        uint64_t total_time_spinning;
-        uint64_t locks_taken;
-        uint64_t locks_acquired_single_attempt;
-    };  // struct WaitTimeData
-
     struct qfruntime {
         uint64_t num_locks;
         spinlock_padded* locks;
-        WaitTimeData* wait_times;
         // Locks required for reallocating spinlocks
         std::atomic<bool> resize_pending{false};
         std::shared_mutex spinlock_mutex;
@@ -413,17 +347,7 @@ class Aleph {
     qfmetadata* metadata_;
     qfblock*    blocks_;
     Aleph*      secondary_aleph_;
-    /* TODO: make deletion support multiple deletes at once. Now only supports one at a time */
     std::queue<uint64_t> deletion_queue_;
-
-    /**
-     * The below struct is used to instrument the code.
-     * It is not used in normal operations of Zeno filter.
-     */
-    struct ClusterData {
-        uint64_t start_index;
-        uint16_t length;
-    };  // struct ClusterData
 
     ////////////////////////////////////
     // Modification helper functions. //
@@ -573,12 +497,6 @@ class Aleph {
         }
         return false;
     }
-
-    /**
-     * Tries to acquire a lock once and return even if the lock is busy. Used for normal operations 
-     * of the inserting thread. If spin flag is set, waits until the spinloc
-     * 
-     */
 
     /**
      * Unlock the acquired lock.
@@ -1028,33 +946,6 @@ class Aleph {
         std::cout << std::endl;
     }
 
-    public:
-    /**
-     * Prints the current status of runtime locks. 
-     * @warning This method is not thread-safe. If this method is called while the lock is being
-     * resized, it will cause undefined behavior (most likely a segfault). 
-     */
-    void print_lock_status(bool verbose=false) const {
-        std::cout << "printing" << std::endl;
-        if (!verbose) {
-            for (uint64_t zz = 0; zz < runtimedata_->num_locks; ++zz) {
-                if (runtimedata_->locks[zz].lock_.lock_.load(std::memory_order_acquire)) {
-                    std::cout << zz << " :: locked" << std::endl;
-                }
-            }
-        } else {
-            for (uint64_t zz = 0; zz < runtimedata_->num_locks; ++zz) {
-                if (runtimedata_->locks[zz].lock_.lock_.load(std::memory_order_acquire)) {
-                    std::cout << zz << " :: locked" << std::endl;
-                } 
-                else {
-                    std::cout << zz << " :: unlocked" << std::endl;
-                }
-            }
-        }
-        std::cout << "printing finished" << std::endl;
-    }
-
 };  // class Aleph
 
 Aleph::Aleph(uint64_t exp_size, uint64_t hash_bits, hashmode hash_mode, uint32_t seed, 
@@ -1124,10 +1015,6 @@ Aleph::Aleph(uint64_t exp_size, uint64_t hash_bits, hashmode hash_mode, uint32_t
     size_t lock_bytes = runtimedata_->num_locks * sizeof(spinlock_padded);
     runtimedata_->locks = (spinlock_padded*)malloc(lock_bytes);
     if (runtimedata_->locks) memset(runtimedata_->locks, 0, lock_bytes);
-#ifdef LOG_WAIT_TIME
-    runtimedata_->wait_times = reinterpret_cast<WaitTimeData *>
-                               (new WaitTimeData[runtimedata->num_locks + 1]{});
-#endif
 }
 
 inline Aleph::~Aleph() {
