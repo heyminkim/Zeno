@@ -3,7 +3,7 @@
 # Experiment 1
 # Runs script/exp_spaceamp.sh and script/exp_stretching.sh
 
-FILE=exp_stretching
+FILE=exp1
 STR_MAXAMP="exp_insert_spaceamp_loadfactor"
 STR_AMP="fe_amp"
 STR_QUERY="fe_query"
