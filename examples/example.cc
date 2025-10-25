@@ -71,5 +71,7 @@ int main(int argc, char **argv) {
     }
     std::cout << "Queries success for " << nvals << " keys." << std::endl;
 
+    delete zeno;
+
     return 0;
 }
