@@ -507,7 +507,7 @@ for idx, (ax, filename) in enumerate(zip(axes, filenames)):
             xticks = [1, 2, 4, 8, 16, 32, 64]
             ax.set_xticks(xticks)
             ax.set_xticklabels([str(t) for t in xticks])
-            ax.xaxis.minorticks_off()
+            ax.minorticks_off()
 
         if individual_legend:
             loc = 'lower right'
