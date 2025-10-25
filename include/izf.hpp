@@ -140,6 +140,9 @@ class IZF {
     double get_space_amplification() const {
         return metadata_->space_amplification_;
     }
+    uint64_t get_num_slots() const {
+        return metadata_->nslots;
+    }
 
     // Checks whether the filter is expanding. 
     bool is_filter_growing() const {
@@ -160,6 +163,35 @@ class IZF {
 
     void print_by_index(uint64_t index) const {
         print_from_index(index);
+    }
+    
+    uint64_t calculate_nonempty_slots() const {
+        uint64_t running_cluster_length = 0;
+        uint64_t current_runend_index = 0;
+        uint64_t current_index = 0;
+
+        uint64_t nonempty_slot = 0;
+        while (true) {
+            if (current_index > metadata_->nslots) break;
+            if (!is_occupied(current_index)) {
+                ++current_index;
+                continue;
+            }
+            current_runend_index = run_end(current_index);
+            running_cluster_length += current_runend_index - current_index + 1;
+            for (uint64_t i = current_index + 1; i <= current_runend_index; ++i) {
+                if (!is_occupied(i)) continue;
+                else {
+                    uint64_t new_runend_index = run_end(i);
+                    running_cluster_length += new_runend_index - current_runend_index;
+                    current_runend_index = new_runend_index;
+                }
+            }
+            current_index = current_runend_index + 1;
+            nonempty_slot += running_cluster_length;
+            running_cluster_length = 0;
+        }
+        return nonempty_slot;
     }
 
     private:

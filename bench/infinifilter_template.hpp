@@ -43,7 +43,7 @@ class InfiniFilter : public Filter {
     }
 
     void contract() {
-        filter->contract();
+        return;
     }
 
     uint64_t size() const {
