@@ -36,7 +36,7 @@ ZenoFilter(uint64_t exp_size, uint64_t fp_bits, uint64_t value_bits,
 - `seed`: The seed for the hash function. 
 - `threshold`: The expansion threshold for exansion. Corresponds to $\alpha$ from the paper. 
 
-The following example code initializes Zeno filter with $2^{12}$ slots, use $8$-bit fingerprints, $r=1$, and expands when 90% full. 
+The following example code initializes Zeno filter with $2^{12}$ slots, use 8-bit fingerprints, $r=1$, and expands when 90% full. 
 
 ```c++
 using namespace zeno;
