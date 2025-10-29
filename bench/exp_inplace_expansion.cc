@@ -9,10 +9,9 @@
 #include "util.hpp"
 #include "base.hpp"
 
-#include "izf_template.hpp"
-#include "vzf_template.hpp"
+#include "zenofilter_template.hpp"
+#include "zenofiltervm_template.hpp"
 #include "aleph_template.hpp"
-#include "infinifilter_template.hpp"
 
 #include "../util/cxxopts.hpp"
 
@@ -80,10 +79,9 @@ int main(int argc, char** argv) {
     }
 
     zeno_bench::Filter* filter;
-    if (r == 1) filter = new zeno_bench::IZF(qbits, qbits + fbits, 1);
-    else if (r == 2) filter = new zeno_bench::VZF(qbits, qbits + fbits, 1);
+    if (r == 1) filter = new zeno_bench::ZenoFilter(qbits, qbits + fbits, 1);
+    else if (r == 2) filter = new zeno_bench::ZenoFilterVM(qbits, qbits + fbits, 1);
     else if (r == 3) filter = new zeno_bench::Aleph(qbits, qbits + fbits);
-    else if (r == 4) filter = new zeno_bench::InfiniFilter(qbits, qbits + fbits);
 
     file_query << label << ",";
     file_fpr << label << ",";

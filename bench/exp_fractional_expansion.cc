@@ -9,7 +9,7 @@
 #include "util.hpp"
 #include "base.hpp"
 
-#include "izf_template.hpp"
+#include "zenofilter_template.hpp"
 
 #include "../util/cxxopts.hpp"
 
@@ -81,7 +81,7 @@ int main(int argc, char** argv) {
     queries = (uint64_t*)malloc(num_queries * sizeof(queries[0]));
     RAND_bytes((unsigned char*)queries, sizeof(*queries) * num_queries);
 
-    zeno_bench::Filter* filter = new zeno_bench::IZF(qbits, qbits + fbits, r);
+    zeno_bench::Filter* filter = new zeno_bench::ZenoFilter(qbits, qbits + fbits, r);
 
     file_size << filter->name(true) << "_" << fbits << ",";
     file_query << filter->name(true) << "_" << fbits << ",";

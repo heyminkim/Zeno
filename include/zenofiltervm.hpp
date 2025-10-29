@@ -35,14 +35,15 @@
 
 namespace zeno {
 
-class IZF {
+class ZenoFilterVM {
     public:
-    explicit IZF(uint64_t exp_size, uint64_t hash_bits, uint64_t value_bits, 
-                 uint64_t reciprocal_ratio, hashmode hash_mode, uint32_t seed, double threshold);
-    ~IZF();
-    IZF(const IZF& zeno) = delete;
-    IZF& operator=(const IZF& zeno) = delete;
-    IZF& operator=(IZF&& other) noexcept;
+    explicit ZenoFilterVM(uint64_t exp_size, uint64_t hash_bits, uint64_t value_bits, 
+                          uint64_t reciprocal_ratio, hashmode hash_mode, uint32_t seed, 
+                          double threshold);
+    ~ZenoFilterVM();
+    ZenoFilterVM(const ZenoFilterVM& zeno) = delete;
+    ZenoFilterVM& operator=(const ZenoFilterVM& zeno) = delete;
+    ZenoFilterVM& operator=(ZenoFilterVM&& other) noexcept;
 
     /////////////////////////////
     // Modification functions. //
@@ -92,10 +93,7 @@ class IZF {
     int64_t grow(uint64_t dangling_hash, uint64_t dangling_count, uint8_t flags);
 
     /**
-     * Decreases the capacity of the underlying memory. The parameters are for a potential 
-     * 'dangling' hash; the hash that caused expansion will not have been inserted to the larger 
-     * filter. This function handles that case. 
-     * @param flags The original flag used for insertion. 
+     * Decreases the capacity of the underlying memory. 
      * @returns The number of reallocated entries. <= 0 if error. 
      */
     int64_t contract();
@@ -121,6 +119,15 @@ class IZF {
      */
     uint64_t query(uint64_t key, uint64_t& value, uint8_t flags);
 
+    /**
+     * Lookup the value associated with key. Returns the count of that key/value pair in Zeno.
+     * @param key The query key. 
+     * @param value Holder for the associated value. 
+     * @param flags Flags determining the filter's behavior under concurrency, as well as if the 
+     * prefix is already hashed or not.
+     */
+    uint64_t concurrent_query(uint64_t key, uint64_t& value, uint8_t flags);
+
     // Hashing info
     hashmode get_hashmode() const {
         return metadata_->hash_mode;
@@ -135,13 +142,10 @@ class IZF {
         return metadata_->hash_bits;
     }
     uint64_t get_memory_usage() const {
-        return metadata_->total_memory_usage + index_block_.capacity() * sizeof(qfblock*);
+        return metadata_->vmem_size_;
     }
     double get_space_amplification() const {
         return metadata_->space_amplification_;
-    }
-    uint64_t get_num_slots() const {
-        return metadata_->nslots;
     }
 
     // Checks whether the filter is expanding. 
@@ -158,98 +162,19 @@ class IZF {
 
     inline
     uint64_t get_index_block_size() const {
-        return index_block_.size();
+        return 0;
     }
 
     void print_by_index(uint64_t index) const {
         print_from_index(index);
     }
-    
-    uint64_t calculate_nonempty_slots() const {
-        uint64_t running_cluster_length = 0;
-        uint64_t current_runend_index = 0;
-        uint64_t current_index = 0;
 
-        uint64_t nonempty_slot = 0;
-        while (true) {
-            if (current_index > metadata_->nslots) break;
-            if (!is_occupied(current_index)) {
-                ++current_index;
-                continue;
-            }
-            current_runend_index = run_end(current_index);
-            running_cluster_length += current_runend_index - current_index + 1;
-            for (uint64_t i = current_index + 1; i <= current_runend_index; ++i) {
-                if (!is_occupied(i)) continue;
-                else {
-                    uint64_t new_runend_index = run_end(i);
-                    running_cluster_length += new_runend_index - current_runend_index;
-                    current_runend_index = new_runend_index;
-                }
-            }
-            current_index = current_runend_index + 1;
-            nonempty_slot += running_cluster_length;
-            running_cluster_length = 0;
-        }
-        return nonempty_slot;
+    void breakpoint() const {
+        return;
     }
 
     private:
-    friend class iterator<IZF>;
-    /** 
-     * Class for computing fixed point operations. The results are always automatically converted to 
-     * uint64_t. 
-     */
-#if defined(FIXED)
-    class FixedPoint {
-        public:
-        static constexpr int kFractionalBits = 20;
-        static constexpr uint64_t kScalingFactor = 1ULL << kFractionalBits;
-        static constexpr uint64_t kBitMask = BITMASK(kFractionalBits);
-
-        FixedPoint() = default;
-        FixedPoint(double d) :
-            value(static_cast<uint64_t>(d * kScalingFactor)),
-            reciprocal(static_cast<uint64_t>((1./d) * kScalingFactor)) {}
-        
-        FixedPoint operator*(const double& other) const {
-            return FixedPoint(to_double() * other);
-        }
-        
-        FixedPoint operator*(const FixedPoint& other) const {
-            return FixedPoint(to_double() * other.to_double());
-        }
-
-        FixedPoint& operator*=(const double& other) {
-            FixedPoint fp = FixedPoint(to_double() * other);
-            value = fp.value;
-            reciprocal = fp.reciprocal;
-
-            return *this;
-        }
-        
-        uint64_t operator*(const uint64_t& other) const {
-            return (value * other) >> kFractionalBits;  // floor
-        }
-
-        uint64_t operator/(const uint64_t& other) const {
-            return (reciprocal * other) >> kFractionalBits;
-        }
-
-        friend uint64_t operator/(uint64_t lhs, const FixedPoint& rhs) {
-            return (lhs * rhs.reciprocal + rhs.kBitMask) >> rhs.kFractionalBits;
-        }
-
-        uint64_t get_raw_value() const { return value; }
-        double to_double() const { 
-            return static_cast<double>(value) / kScalingFactor; 
-        }
-
-        private:
-        uint64_t value;         // used for multiplication
-        uint64_t reciprocal;    // used for division
-    };  // class FixedPoint
-#endif
+    friend class iterator<ZenoFilterVM>;
 
     static constexpr uint64_t kDistanceFromHomeSlotCutoff = 1000;
     static constexpr uint64_t kMagicNumber = 1018874902021329732;
@@ -382,8 +307,6 @@ class IZF {
         uint64_t ndistinct_elts;
         uint64_t noccupied_slots;
         double expansion_threshold;
-        /* For debugging. */
-        uint64_t num_expansions;
         PartitionedCounter pc_noccupied_slots;
         /* Size of a qfblock in bytes. */
         uint64_t qfblock_size;
@@ -394,13 +317,6 @@ class IZF {
         // of slots in the widening regime. 
         uint64_t num_expansions;
 #endif
-        /**
-         * MOD: metadata for resizable array
-         * The exponent of the RA size of this period. The initial RA size is (1 << exp_ra_size_) 
-         * and the RA size of the next epoch is (1 << exp_ra_size_) * 2^{1/r}. The value of 
-         * `exp_ra_size_` increases by 1 on each period. 
-         */
-        uint64_t exp_ra_size_; 
         /* The reciprocal ratio of filter expansion. */
         uint64_t reciprocal_ratio_; 
         /**
@@ -411,31 +327,12 @@ class IZF {
         /* Space amplification after each expansion */
         double space_amplification_;
         double multiplicative_ratio_;
-        /**
-         * The exponent of the size of a single slot of the datablock. Given an index, a lookup 
-         * slices the lower `exp_db_size_` bits from the index for internal lookup. 
-         */
-        uint64_t exp_db_size_; // = QF_BLOCK_OFFSET_BITS + EXP_NUM_QF_PER_UNIT
         /* Current epoch of expansion. Rolls back to 0 when it reaches the reciprocal ratio. */
         uint64_t current_epoch_;
-        /*  Data of current location */
-        uint64_t current_superblock_index_;
-        /* Number of appended datablocks in this superblock */
-        uint64_t current_appended_datablocks_;
-        /**
-         * Data of appended units. The number of data blocks in each superblock and the size of each 
-         * data block, respectively. 
-         */
-        uint64_t appended_datablock_num_;
-        uint64_t appended_datablock_size_;
-        /**
-         * Total number of entries in the array. Intentionally defined as a double, because if 
-         * `expansion_ratio_` is too small, casting the multiplicative result against 
-         * `expansion_ratio_` to uint64_t might lose the values under the decimal. 
-         */
-        double current_size_; // = 0
         /* Is the current epoch a power of 2? */
         bool is_period_;
+        /* Amount of allocated memory via vmem. */
+        uint64_t vmem_size_;
     };  // struct qfmetadata
 
     struct ZeroBufferEntry {
@@ -451,9 +348,6 @@ class IZF {
     qfruntime*  runtimedata_;
     qfmetadata* metadata_;
     qfblock*    blocks_;
-
-    /* The index block that serves as a directory for data blocks. */
-    std::vector<qfblock*> index_block_;
 
     ////////////////////////////////////
     // Modification helper functions. //
@@ -549,41 +443,6 @@ class IZF {
         metadata_->num_expansions = num;
     }
 #endif
-
-    // Resizable array modification functions
-
-    /**
-     * Given a superblock index, calculates the number of preceding data blocks. 
-     * @param k The superblock index. 
-     * @returns The number of data blocks preceding the superblock. 
-     */
-    uint64_t calculate_A(const uint64_t& k) const;
-
-    struct indexABC {
-        uint64_t superblock_index;
-        uint64_t datablock_index;
-        uint64_t element_index;
-
-        indexABC(uint64_t a, uint64_t b, uint64_t c) :
-            superblock_index(a), datablock_index(b), element_index(c)
-        {}
-
-        void print() const {
-            std::cout << "superblock index : " << superblock_index << " , " << \
-                         "datablock index : " << datablock_index << " , " << \
-                         "element index : " << element_index << std::endl;
-        }
-    };
-
-    /**
-     * Given an index, calculates the superblock index, data block index, and the element index 
-     * within the data block. 
-     * @note The function assumes the input `index` is an index that is at the granularity of an 
-     * unit of the resizable array. The caller must adjust the `index` accordingly. 
-     * @param index The index that we wish to calculate the additional index of.
-     * @returns indexABC that holds the relevant index information. 
-     */
-    const indexABC entry_lookup_internal(const uint64_t& index) const;
 
     /**
      * Calculates the smallest power of 2 greater than `value`. 
@@ -766,26 +625,14 @@ class IZF {
      * @returns The pointer to the target qf block. 
      */
     qfblock* get_block(const uint64_t block_index) const {
-        uint64_t datablock_index = (block_index >> kUnitOffsetBits) + 1;
-                
-        uint64_t k = 63ULL - __builtin_clzll(datablock_index);
-        uint64_t floor_k = (k >> 1), mask_up = (1ULL << floor_k) - 1;
-        uint64_t ceil_k = ((k + 1) >> 1), mask_low = (1ULL << ceil_k) - 1;
-        uint64_t off = ((datablock_index & mask_low) << kUnitOffsetBits) + 
-                    (block_index & BITMASK(kUnitOffsetBits));
-
-        qfblock* qb_ptr = index_block_[calculate_A(k) + ((datablock_index >> ceil_k) & mask_up)];
-        qfblock* qb = (qfblock*)(((char*)qb_ptr) + off * 
-                                 (sizeof(qfblock) + kSlotsPerBlock * metadata_->bits_per_slot / 8));
-
-        return qb;      
+        return (qfblock *)(((char *)blocks_) + block_index * (sizeof(qfblock) + kSlotsPerBlock *
+                                                              metadata_->bits_per_slot / 8));
     }
 
     void set_slot(const uint64_t& index, const uint64_t& value);
     uint64_t get_slot(const uint64_t& index) const;
 
     uint64_t run_end(const uint64_t& hash_bucket_index) const;
-    uint64_t run_end2(const uint64_t& hash_bucket_index) const;
     uint64_t block_offset(const uint64_t& blockidx) const;
     int32_t offset_lower_bound(const uint64_t& slot_index) const;
     uint64_t find_first_empty_slot(uint64_t from) const;
@@ -823,26 +670,6 @@ class IZF {
     //////////////////////////////////
     // Hash manipulation functions. //
     //////////////////////////////////
-
-    /**
-     * Inserts an unary delimiter at the end of the hash. For example, if the given hash is 64 bits 
-     * and quotient_bits = 4 and bits_per_slot = 4, then
-     *  qqqq ffff xxxx....xxxx
-     * | qb | fp |  64-8 bits |
-     * The resulting hash will be the original hash shifted to the lower bits with an unary 
-     * delimiter at the end:
-     *  0000....0000 qqqq ffff 1
-     * |  64-7 bits | qb | fp |d|
-     * The shifting to the lower bits is done because the internal functions `insert1` and `insertN`
-     * assumes the hash to be in the lower bits. 
-     * @deprecated Use `insert_unary` instead. 
-     * @param hash The hash of a key. 
-     */
-    inline
-    void insert_unary_deprecated(uint64_t& hash) const {
-        // The last bit is converted to a unary counter by doing an `OR` with 1. 
-        hash = hash >> (64ULL - metadata_->hash_bits) | 1ULL;
-    }
 
     /**
      * Inserts an unary delimeter in between the index bits and the remainder
@@ -907,10 +734,16 @@ class IZF {
         int unary_count = __builtin_clzll((~f) << (64 - metadata_->fingerprint_bits)) + 1;
         uint64_t old_fp_len = metadata_->fingerprint_bits - unary_count;
         uint64_t parity = q & 1;
-        uint64_t unary = (BITMASK(unary_count - 2) << 2) | parity;
-        f = (unary << old_fp_len) | (f & BITMASK(old_fp_len));
-        q >>= 1;
-
+        if (unary_count == 1) {
+            uint64_t unary = parity;
+            f = (unary << old_fp_len) | (f & BITMASK(old_fp_len));
+            f >>= 1;
+            q >>= 1;
+        } else {
+            uint64_t unary = (BITMASK(unary_count - 2) << 2) | parity;
+            f = (unary << old_fp_len) | (f & BITMASK(old_fp_len));
+            q >>= 1;
+        }
         return (q << metadata_->fingerprint_bits) | f;
     }
 
@@ -960,7 +793,6 @@ class IZF {
     }
 
     /**
-     * TODOX
      * Checks whether the stored fingerprint (with unary) matches that of the queried fingerprint 
      * (without unary).
      * @param stored_fingerprint The stored fingerprint with unary padding.
@@ -974,12 +806,6 @@ class IZF {
         const uint64_t p = __builtin_clzll((~stored_fingerprint)
                            << (64 - metadata_->bits_per_slot)) + 1;
         const uint64_t mask = BITMASK(metadata_->bits_per_slot - p);
-        // std::cout << "    p         : " << p << std::endl;
-        // std::cout << "    mask      : " << std::bitset<8>(mask) << std::endl;
-        // std::cout << "    stored(o) : " << std::bitset<8>(stored_fingerprint) << std::endl;
-        // std::cout << "    stored(m) : " << std::bitset<8>(stored_fingerprint & mask) << std::endl;
-        // std::cout << "    querid(o) : " << std::bitset<8>(queried_fingerprint) << std::endl;
-        // std::cout << "    querid(m) : " << std::bitset<8>(queried_fingerprint >> p) << std::endl;
         if ((stored_fingerprint & mask) == (queried_fingerprint >> p)) {
             return metadata_->bits_per_slot - p;
         } else {
@@ -1121,10 +947,7 @@ class IZF {
         return metadata_->nslots;
     }
 	uint64_t count_occupied_slots() const {
-        // metadata_->pc_noccupied_slots.sync();
         return metadata_->pc_noccupied_slots.get_counter();
-        // return metadata_->noccupied_slots;
-        // return metadata_->atomic_noccupied_slots;
     }
 
     // Bit size info
@@ -1151,18 +974,15 @@ class IZF {
     // Debugging functions. //
     //////////////////////////
 
-    void debug_dump_block() const;
-
     /** 
-     * Prints the contents of the current occupieds and runends from a given
-     * index. 
+     * Prints the contents of the current occupieds and runends from a given index. 
      */
     void print_from_index(const uint64_t& index) const {
         std::cout << "=================================" << std::endl;
         std::cout << "occupied : " << index << std::endl;
         uint64_t runend = run_end(index);
         std::cout << "runend   : " << runend << std::endl;
-        uint64_t runstart = run_end(index - 1);
+        uint64_t runstart = run_end(index > 0 ? index - 1 : 0);
         std::cout << "runstart : " << runstart << std::endl;
         for (int i = (index / 64) * 64 + 64 - 1; i >= (index / 64) * 64; --i) {
             if (i >= metadata_->xnslots) break;
@@ -1196,10 +1016,11 @@ class IZF {
         std::cout << "---------------------------------" << std::endl;
         std::cout << std::endl;
     }
-};  // class IZF
 
-IZF::IZF(uint64_t exp_size, uint64_t hash_bits, uint64_t value_bits, 
-           uint64_t reciprocal_ratio, hashmode hash_mode, uint32_t seed, double threshold = 0.8) {
+};  // class ZenoFilterVM
+
+ZenoFilterVM::ZenoFilterVM(uint64_t exp_size, uint64_t hash_bits, uint64_t value_bits, 
+           uint64_t reciprocal_ratio, hashmode hash_mode, uint32_t seed, double threshold = 0.9) {
     uint64_t num_slots, xnslots, nblocks;
     uint64_t fingerprint_bits, bits_per_slot;
     uint64_t buffer_size = 0;
@@ -1222,11 +1043,8 @@ IZF::IZF(uint64_t exp_size, uint64_t hash_bits, uint64_t value_bits,
     qfblock_size = sizeof(qfblock) + (kSlotsPerBlock * bits_per_slot / 8);
 
     uint8_t* buffer;
-    metadata_ = new qfmetadata;
     total_num_bytes = sizeof(qfmetadata);
-    blocks_ = nullptr;
-
-    metadata_->total_memory_usage = total_num_bytes;
+    metadata_ = new qfmetadata;
 
     metadata_->magic_endian_number = kMagicNumber;
     metadata_->auto_resize = 0;
@@ -1249,72 +1067,48 @@ IZF::IZF(uint64_t exp_size, uint64_t hash_bits, uint64_t value_bits,
     metadata_->noccupied_slots = 0;
     metadata_->qfblock_size = qfblock_size;
     metadata_->expansion_threshold = threshold;
-    metadata_->num_expansions = 0;
 
 #if defined(WIDENING)
     metadata_->num_expansions = 0;
 #endif
 
-    metadata_->exp_db_size_ = kBlockOffsetBits + kUnitOffsetBits;   // = 12
     metadata_->reciprocal_ratio_ = reciprocal_ratio;
     metadata_->expansion_ratio_ = pow(2., 1./(double)(reciprocal_ratio));
     metadata_->multiplicative_ratio_ = 1.0;
-    metadata_->exp_ra_size_ = exp_size - metadata_->exp_db_size_;
-    metadata_->current_size_ = (double)(1ULL << metadata_->exp_ra_size_);
     metadata_->current_epoch_ = 0ULL;
-    metadata_->current_superblock_index_ = 0ULL;
-    metadata_->appended_datablock_num_ = 1ULL;
-    metadata_->appended_datablock_size_ = 1ULL;
     metadata_->space_amplification_ = 0;
 
-    // additional space to account for 10*sqrt(n) slots
-    indexABC additional_index = entry_lookup_internal((xnslots) >> (metadata_->exp_db_size_));
-    uint64_t blocks_to_add = additional_index.superblock_index
-                           + additional_index.datablock_index + 1;
-    
-    uint64_t current_appended_datablocks = 0ULL;
-    uint64_t index_block_size = calculate_A(metadata_->exp_ra_size_) + 1;
+    uint64_t current_vmem_size = nblocks * qfblock_size;
 
-    for (uint64_t i = 0; i < blocks_to_add; ++i) {
-        uint64_t new_size = qfblock_size * (metadata_->appended_datablock_size_ << kUnitOffsetBits);
-        metadata_->total_memory_usage += new_size;
-        uint8_t* datablock_buffer = new uint8_t[new_size]{};
-        qfblock* qbi = reinterpret_cast<qfblock*>(datablock_buffer);
-        index_block_.push_back(qbi);
-        ++current_appended_datablocks;
-        /**
-         * This superblock is full; move on to the next superblock by increasing
-         * either the data block number of data block size. 
-         */
-        if (current_appended_datablocks == metadata_->appended_datablock_num_) {
-            if (metadata_->current_superblock_index_ & 1ULL) {
-                metadata_->appended_datablock_num_ <<= 1;
-            } else {
-                metadata_->appended_datablock_size_ <<= 1;
-            }
-            current_appended_datablocks = 0;
-            metadata_->current_superblock_index_ += 1;
-        }
+    // mmap implementation
+    int prot = PROT_READ | PROT_WRITE;
+    int flags = MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_POPULATE;
+    blocks_ = (qfblock*)mmap(NULL, current_vmem_size, prot, flags, -1, 0);
+    if (blocks_ == MAP_FAILED) {
+        perror("mmap failed for initialization.");
+        exit(1);
     }
-    metadata_->current_appended_datablocks_ = current_appended_datablocks;
+
+    metadata_->vmem_size_ = current_vmem_size;
     metadata_->is_period_ = true;
     
     runtimedata_ = new qfruntime;
     runtimedata_->num_locks = (metadata_->xnslots / kNumSlotsToLock) + 2;
-    // runtimedata_->locks = new spinlock_padded[runtimedata_->num_locks]{};
     size_t lock_bytes = runtimedata_->num_locks * sizeof(spinlock_padded);
     runtimedata_->locks = (spinlock_padded*)malloc(lock_bytes);
     if (runtimedata_->locks) memset(runtimedata_->locks, 0, lock_bytes);
 }
 
-inline IZF::~IZF() {
+inline ZenoFilterVM::~ZenoFilterVM() {
     if (runtimedata_) {
         while (runtimedata_->resizing_region.load(std::memory_order_acquire) != -1) {
             std::this_thread::yield();
         }
     }
-    for (qfblock* qbi : index_block_) {
-        delete[] qbi;
+    if (blocks_) {
+        if (munmap(reinterpret_cast<void*>(blocks_), metadata_->vmem_size_)) {
+            exit(EXIT_FAILURE);
+        }
     }
     if (metadata_) {
         delete metadata_;
@@ -1325,7 +1119,7 @@ inline IZF::~IZF() {
     }
 }
 
-inline IZF& IZF::operator=(IZF&& other) noexcept {
+inline ZenoFilterVM& ZenoFilterVM::operator=(ZenoFilterVM&& other) noexcept {
     metadata_ = other.metadata_;
     blocks_ = other.blocks_;
     runtimedata_ = other.runtimedata_;
@@ -1335,7 +1129,7 @@ inline IZF& IZF::operator=(IZF&& other) noexcept {
     return *this;
 }
 
-int IZF::insert(uint64_t key, uint64_t value, uint64_t count, uint8_t flags) {
+int ZenoFilterVM::insert(uint64_t key, uint64_t value, uint64_t count, uint8_t flags) {
     if (count_occupied_slots() >= metadata_->nslots * metadata_->expansion_threshold) {
         // No more space. Either grow or fail based on `auto_resize`
         if (metadata_->auto_resize) {
@@ -1343,7 +1137,7 @@ int IZF::insert(uint64_t key, uint64_t value, uint64_t count, uint8_t flags) {
 
             if (GET_NO_LOCK(flags) == kNoLock && GET_IS_FILTER_GROWING(flags) != kIsFilterGrowing) {
                 grow_ret = grow(0, 0, flags);
-            } else {
+            } else if (GET_NO_LOCK(flags) != kNoLock && GET_IS_FILTER_GROWING(flags) != kIsFilterGrowing) {
                 int64_t expected_region = -1;
                 int64_t max_region = (metadata_->nslots - 1) / kNumSlotsToLock;
                 // We were the first one to trigger grow
@@ -1374,7 +1168,6 @@ int IZF::insert(uint64_t key, uint64_t value, uint64_t count, uint8_t flags) {
     if (count == 0) return 0;
 
     if (GET_NO_LOCK(flags) != kNoLock) {
-        // while (runtimedata_->resize_pending.load(std::memory_order_acquire)) {
         while (runtimedata_->resizing_region.load(std::memory_order_acquire) == 0) {
             std::this_thread::yield();
         }
@@ -1403,7 +1196,7 @@ int IZF::insert(uint64_t key, uint64_t value, uint64_t count, uint8_t flags) {
 
     // check for fullness based on the distance from the home slot to the slot
     // in which the key is inserted
-    if (ret == kErrNoSpace ) { // || ret > kDistanceFromHomeSlotCutoff
+    if (ret == kErrNoSpace ) {
         float load_factor = count_occupied_slots() / (float)metadata_->nslots;
         if (metadata_->auto_resize) {
             fprintf(stdout, "Resizing filter...\n");
@@ -1426,8 +1219,8 @@ int IZF::insert(uint64_t key, uint64_t value, uint64_t count, uint8_t flags) {
 }
 
 inline
-int32_t IZF::remove(uint64_t key, uint64_t value, uint64_t count, 
-                     uint8_t flags) {
+int32_t ZenoFilterVM::remove(uint64_t key, uint64_t value, uint64_t count, 
+                             uint8_t flags) {
     if (GET_KEY_HASH(flags) != kKeyIsHash) {
         auto hash_mode = get_hashmode();
         if (hash_mode == hashmode::Default) {
@@ -1448,10 +1241,17 @@ int32_t IZF::remove(uint64_t key, uint64_t value, uint64_t count,
         ret = remove_longest_internal(hash, count, flags);
         if (ret < 0) return ret;
     }
+    if (count_occupied_slots() <= metadata_->nslots * metadata_->expansion_threshold * 0.5) {
+        if (metadata_->auto_resize) {
+            this->contract();
+        } else {
+            return -1;
+        }
+    }
     return ret;
 }
 
-int IZF::delete_key_value(uint64_t key, uint64_t value, uint8_t flags) {
+int ZenoFilterVM::delete_key_value(uint64_t key, uint64_t value, uint8_t flags) {
     if (GET_KEY_HASH(flags) != kKeyIsHash) {
         auto hash_mode = get_hashmode();
         if (hash_mode == hashmode::Default) {
@@ -1468,19 +1268,14 @@ int IZF::delete_key_value(uint64_t key, uint64_t value, uint8_t flags) {
     return remove_internal(hash, std::numeric_limits<uint64_t>::max(), flags);
 }
 
-int64_t IZF::grow(uint64_t dangling_hash, uint64_t dangling_count, uint8_t flags) {
+int64_t ZenoFilterVM::grow(uint64_t dangling_hash, uint64_t dangling_count, uint8_t flags) {
     ++metadata_->current_epoch_;
     metadata_->is_period_ = false;
 
     // `divide_by` divides the current 'stretched' canonical slot index to the original value. 
     // `multiply_by` stretches the canonical slot index. 
-#if defined(FIXED)
-    FixedPoint divide_by = metadata_->multiplicative_ratio_;
-    FixedPoint multiply_by = 1.0;
-#else
     double divide_by = metadata_->multiplicative_ratio_;
     double multiply_by = 1.0;   // multiplies ceiling of divided canonical slot
-#endif
     
     // The size of the filter after expansion. Disregard the additional sqrt slots and calculate the 
     // larger filter normally, then append the sqrt part at the end. `nslots` here is the size of 
@@ -1496,18 +1291,12 @@ int64_t IZF::grow(uint64_t dangling_hash, uint64_t dangling_count, uint8_t flags
         next_nslots = calculateNextPowerOf2(next_nslots);
         metadata_->current_epoch_ = 0;
         period_terminates = true;
-        metadata_->exp_ra_size_ += 1;
     } else {
         multiply_by = divide_by * metadata_->expansion_ratio_;
     }
 
     // Calculate the number of data blocks to be added.
     uint64_t next_xnslots = next_nslots + 10*sqrt((double)next_nslots);
-    indexABC additional_index = entry_lookup_internal((next_xnslots) >> (metadata_->exp_db_size_));
-    uint64_t blocks_to_add = additional_index.superblock_index
-                           + additional_index.datablock_index + 1
-                           - index_block_.size();
-    uint64_t appended_datablocks = metadata_->current_appended_datablocks_;
 
     /**
      * Zeno locks four regions for expansion; two regions for reads and two regions for writes.
@@ -1520,24 +1309,17 @@ int64_t IZF::grow(uint64_t dangling_hash, uint64_t dangling_count, uint8_t flags
     int64_t write_region_second = -1;
 
     /** 
-     * Allocate memory for the larger filter. The behavior differs between RARRAY and VMEM. Both
-     * expands in-place, and the code accounts for fractional expansion as well. 
+     * Allocate memory for the larger filter. 
      */
+
+    // uint64_t new_vmem_size = metadata_->vmem_size_ + additional_memory;
+    uint64_t next_nblocks = (next_xnslots + kSlotsPerBlock - 1) / kSlotsPerBlock;
+    uint64_t new_vmem_size = next_nblocks * metadata_->qfblock_size;
 #if defined(WIDENING)
+    uint64_t buffer_length = 64;    // buffer the first qfblock
     uint64_t new_fingerprint_length;
     uint64_t original_fingerprint_length;
     uint64_t original_quotient_length = metadata_->quotient_bits;
-    /**
-     * This buffers the first 6143 slots, which is the index that, when multiplied by 2, gets mapped
-     * to the same rarray data block and causes problems. Index 6143 is in data block 1 and index
-     * 6143*2=12286 is also in data block 1. Index 6143 is the first index that is mapped to the 
-     * same data block. 
-     */
-    uint64_t buffer_length = metadata_->nslots > 6144 ? 6144 : metadata_->nslots - 1;
-
-    // The index block that should be replaced with 
-    int64_t expanding_block_index = index_block_.size() - 1;
-
     if (period_terminates) {
         /**
          * The "original" fingerprint length, given to the filter at the beginning. Used to compute
@@ -1552,35 +1334,103 @@ int64_t IZF::grow(uint64_t dangling_hash, uint64_t dangling_count, uint8_t flags
         uint64_t new_qfblock_size = sizeof(qfblock) + (kSlotsPerBlock * new_bits_per_slot / 8);
         original_fingerprint_length += 2 * std::floor(std::log2(metadata_->num_expansions + 1));
 
+        // Change newly allocated vmem size to widened slot width
+        new_vmem_size = (new_vmem_size / metadata_->qfblock_size) * new_qfblock_size;
+
         // Update metadata
         metadata_->num_expansions += 1;
         metadata_->qfblock_size = new_qfblock_size;
     }
 #endif
-    for (uint64_t i = 0; i < blocks_to_add; ++i) {
-        uint64_t new_size = metadata_->qfblock_size *
-                            (metadata_->appended_datablock_size_ << kUnitOffsetBits);
-        metadata_->total_memory_usage += new_size;
-        uint8_t* buffer = new uint8_t[new_size]{};
-        qfblock* qbi = reinterpret_cast<qfblock*>(buffer);
-        index_block_.push_back(qbi);
+    iterator<ZenoFilterVM> it;
+    // mmap implementation
+    if (GET_NO_LOCK(flags) != kNoLock) {
+        // Write-lock the spinlock array, blocking future operations that reference the spin lock.
+        runtimedata_->resize_pending.store(true, std::memory_order_release);
 
-        ++appended_datablocks;
-        
-        if (appended_datablocks == metadata_->appended_datablock_num_) {
-            if (metadata_->current_superblock_index_ & 1ULL) {
-                metadata_->appended_datablock_num_ <<= 1;
-            } else {
-                metadata_->appended_datablock_size_ <<= 1;
+        for (uint64_t l = 0; l < runtimedata_->num_locks; ++l) {
+            while (runtimedata_->locks[l].lock_.lock_.load(std::memory_order_acquire)) {
+                std::this_thread::yield();
             }
-            appended_datablocks = 0;
-            metadata_->current_superblock_index_ += 1;
         }
+
+        // Reallocate the spinlock array. Preserve its contents. 
+        size_t old_num_locks = runtimedata_->num_locks;
+        size_t old_bytes = old_num_locks * sizeof(spinlock_padded);
+
+        uint64_t new_num_locks = (next_xnslots / kNumSlotsToLock) + 2;
+        size_t new_bytes = new_num_locks * sizeof(spinlock_padded);
+
+        spinlock_padded* new_locks = (spinlock_padded*)realloc(runtimedata_->locks, new_bytes);
+        if (!new_locks) {
+            return kErrNoSpace;
+        }
+
+        if (new_bytes > old_bytes) {
+            size_t added_bytes = new_bytes - old_bytes;
+            memset((char*)new_locks + old_bytes, 0, added_bytes);
+        }
+        runtimedata_->locks = new_locks;
+        runtimedata_->num_locks = new_num_locks;
+
+        int rm_flags = MREMAP_MAYMOVE;
+        blocks_ = (qfblock*)mremap(blocks_, metadata_->vmem_size_, new_vmem_size, rm_flags);
+        if (blocks_ == MAP_FAILED) {
+            perror("mremap failed");
+            exit(1);
+        } else {
+            memset((uint8_t*)blocks_ + metadata_->vmem_size_, 0, new_vmem_size - metadata_->vmem_size_);
+        }
+        
+        // Initialize iterator before unlocking
+        it = iterator<ZenoFilterVM>(this, kMaxPosition);
+
+        uint64_t old_nslots = metadata_->nslots;
+        metadata_->space_amplification_ = ((double)new_vmem_size) / ((double)metadata_->vmem_size_);
+        metadata_->vmem_size_ = new_vmem_size;
+        metadata_->nslots = next_nslots;
+        metadata_->xnslots = next_xnslots;
+        metadata_->nblocks = next_nblocks;
+
+        // Preemptively lock the last region to the runend for the expansion thread to read from.
+        // No need to lock because this block of code is guarded by the spinlock mutex.
+        uint64_t last_runend_index = run_end(old_nslots - 1);
+        read_region_first = (old_nslots - 1) / kNumSlotsToLock;
+        read_region_second = last_runend_index / kNumSlotsToLock;
+
+        // Update the upper resizing region
+        // runtimedata_->resizing_region_upper.store(read_region_second, std::memory_order_release);
+
+        for (auto r = read_region_first; r <= read_region_second; ++r) {
+            if (!zeno_lock_region(r, kWaitForLock)) {
+                for (auto q = r; q >= read_region_first; --q) {
+                    zeno_unlock_region(q);
+                }
+                return kErrCouldntLock;
+            }
+        }
+
+        // Unlock the spinlock mutex
+        runtimedata_->resize_pending.store(false, std::memory_order_release);
+    } else {
+        int rm_flags = MREMAP_MAYMOVE;
+        blocks_ = (qfblock*)mremap(blocks_, metadata_->vmem_size_, new_vmem_size, rm_flags);
+        if (blocks_ == MAP_FAILED) {
+            perror("mremap failed");
+            exit(1);
+        } else {
+            memset((uint8_t*)blocks_ + metadata_->vmem_size_, 0, new_vmem_size - metadata_->vmem_size_);
+        }
+        
+        // Initialize iterator before unlocking
+        it = iterator<ZenoFilterVM>(this, kMaxPosition);
+
+        metadata_->space_amplification_ = ((double)new_vmem_size) / ((double)metadata_->vmem_size_);
+        metadata_->vmem_size_ = new_vmem_size;
+        metadata_->nslots = next_nslots;
+        metadata_->xnslots = next_xnslots;
+        metadata_->nblocks = (metadata_->xnslots + kSlotsPerBlock - 1) / kSlotsPerBlock;
     }
-    metadata_->current_appended_datablocks_ = appended_datablocks;
-    metadata_->nslots = next_nslots;
-    metadata_->xnslots = next_xnslots;
-    metadata_->nblocks = (metadata_->xnslots + kSlotsPerBlock - 1) / kSlotsPerBlock;
 
     uint64_t fingerprint, value, count, quotient, new_hash, canonical_slot;
     int64_t ret_numkeys = 0;
@@ -1608,11 +1458,9 @@ int64_t IZF::grow(uint64_t dangling_hash, uint64_t dangling_count, uint8_t flags
          * TODO: under wraparound, we must first get rid of the wrapped around entires before this
          * check.
          */
-        
-        IZF * buffer_zeno = nullptr;
-        // Create an empty iterator
-        iterator<IZF> buffer_it(this);
-        buffer_it.get_last_canonical_slot(buffer_length / kSlotsPerBlock);
+        ZenoFilterVM* buffer_zeno = nullptr;
+        iterator<ZenoFilterVM> buffer_it(this, buffer_length);
+
         if (!buffer_it.is_valid()) return 0;
         
         uint64_t widening_hash, buffer_canonical_slot;
@@ -1620,7 +1468,7 @@ int64_t IZF::grow(uint64_t dangling_hash, uint64_t dangling_count, uint8_t flags
         uint64_t buffer_size = run_end(buffer_it.get_canonical_slot()) + 1;
         uint64_t buffer_size_in_bits = 64 - __builtin_clzll(buffer_size);
 
-        buffer_zeno = new IZF(buffer_size_in_bits, 
+        buffer_zeno = new ZenoFilterVM(buffer_size_in_bits, 
                               buffer_size_in_bits + metadata_->fingerprint_bits, 
                               metadata_->value_bits, metadata_->reciprocal_ratio_, 
                               metadata_->hash_mode, metadata_->seed);
@@ -1653,13 +1501,6 @@ int64_t IZF::grow(uint64_t dangling_hash, uint64_t dangling_count, uint8_t flags
                 delete[] p;
             }
         }
-
-        /* Allocate first data block because it is guaranteed to be empty */
-        qfblock* qb_zero = index_block_[0];
-        delete[] qb_zero;
-        uint8_t* qb_zero_buffer = new uint8_t[metadata_->qfblock_size * (1 << kUnitOffsetBits)]{};
-        qb_zero = reinterpret_cast<qfblock*>(qb_zero_buffer);
-        index_block_[0] = qb_zero;
 #else
         new_void_entry = B;
 #endif
@@ -1674,14 +1515,9 @@ int64_t IZF::grow(uint64_t dangling_hash, uint64_t dangling_count, uint8_t flags
         int void_seq_num = 0;
         // The number of deleted void sequences
         int deleted_void_seq_num = 0;
-        // The last canonical slot we have seen with any void sequences. When we encounter an A seq
-        // at an odd slot, this value gets initialized to that index. Whenever we encounter further
-        // void seqs, this value is updated accordingly. This is to keep track of void sequences 
-        // that should be there but are completely deleted. 
-        int last_valid_canonical_slot = 0;
 
         // Iterate through the filter and move items
-        iterator<IZF> it(this, kMaxPosition);
+        // iterator<ZenoFilterVM> it(this, kMaxPosition);
         if (GET_NO_LOCK(flags) == kNoLock) {
             it.disable_region();
         }
@@ -1695,7 +1531,7 @@ int64_t IZF::grow(uint64_t dangling_hash, uint64_t dangling_count, uint8_t flags
             // The invalid iterator is due to buffering out all existing entries. Initialize 
             // iterator from the buffered filter. 
             } else {
-                it = iterator<IZF>(buffer_zeno, kMaxPosition);
+                it = iterator(buffer_zeno, kMaxPosition);
             }
 #else
             return 0;
@@ -1727,6 +1563,10 @@ int64_t IZF::grow(uint64_t dangling_hash, uint64_t dangling_count, uint8_t flags
         // The updated write_region_second.
         int64_t new_write_region_second = write_region_first;
 
+        // Queue for buffering void sequence inserts. Actual inserts are done after --it. 
+        // Format: [first index, last index, count]
+        std::deque<uint64_t> void_seq_to_insert;
+
         // Main loop for deleting existing entries and reinserting them to the larger filter
         do {
             // Potentially lock the reading region
@@ -1746,35 +1586,20 @@ int64_t IZF::grow(uint64_t dangling_hash, uint64_t dangling_count, uint8_t flags
                         --write_region_first;
 
                         runtimedata_->resizing_region.store(new_region, std::memory_order_release);
-                        // std::cout << "(1) trying to acquire read lock...";
-                        // auto startt = std::chrono::high_resolution_clock::now();
-                        // lock from new_region to read_region_second
+                        
                         for (auto r = new_region; r <= read_region_second; ++r) {
                             if (!zeno_lock_region(r, kWaitForLock)) {
                                 return kErrCouldntLock;
                             }
                         }
-                        // auto end = std::chrono::high_resolution_clock::now();
-                        // auto wait_time_us = std::chrono::duration_cast<std::chrono::nanoseconds>(end - startt).count();
-                        // std::cout << " took " << wait_time_us << " nanoseconds." << std::endl;
-                        // runtimedata_->total_grow_time += wait_time_us;
 
-                        // std::cout << "(2) trying to acquire write lock...";
-                        // startt = std::chrono::high_resolution_clock::now();
                         for (auto r = write_region_first; r <= write_region_second; ++r) {
                             if (r <= read_region_second) continue;
                             if (!zeno_lock_region(r, kWaitForLock)) {
                                 return kErrCouldntLock;
                             }
                         }
-                        // end = std::chrono::high_resolution_clock::now();
-                        // wait_time_us = std::chrono::duration_cast<std::chrono::nanoseconds>(end - startt).count();
-                        // std::cout << " took " << wait_time_us << " nanoseconds." << std::endl;
-                        // runtimedata_->total_grow_time += wait_time_us;
-
                         read_region_first = new_region;
-                        // std::cout << " (e) read  lock updated to " << read_region_first << std::endl;
-                        // std::cout << " (e) write lock updated to " << write_region_first << std::endl;
                     }
                     if (it.is_valid()) {
                         if (!it.get_last_canonical_slot(it.current_block_)) {
@@ -1799,14 +1624,11 @@ int64_t IZF::grow(uint64_t dangling_hash, uint64_t dangling_count, uint8_t flags
                         zeno_unlock_region(r);
                     }
                     read_region_second = new_last_read_region;
-                    // runtimedata_->resizing_region_upper.store(read_region_second, 
-                    //                                           std::memory_order_release);
-                    // std::cout << " (d) read end updated to " << read_region_second << std::endl;
                 }
             }
 
             status = it.get_entry(fingerprint, value, count);
-
+            
             // Delete the entry from the filter first
             original_hash = canonical_slot << metadata_->fingerprint_bits | fingerprint;
 #if defined(WIDENING)
@@ -1818,11 +1640,9 @@ int64_t IZF::grow(uint64_t dangling_hash, uint64_t dangling_count, uint8_t flags
                 }
             } else {
                 if (!delete_key_value(original_hash, value, kNoLock | kKeyIsHash)) {
-                    // TODO: fix error code
                     return -1;
                 }
             }
-            // TODO: maybe erase?
             bool slot_is_occupied = is_occupied(canonical_slot);
 
 #else
@@ -1863,8 +1683,6 @@ int64_t IZF::grow(uint64_t dangling_hash, uint64_t dangling_count, uint8_t flags
                             write_region_second = new_write_region_second;
                             prev_cluster_start_index = 0;
                         }
-                        // std::cout << "(3) trying to acquire write lock...";
-                        // auto startt = std::chrono::high_resolution_clock::now();
                         for (auto r = write_region_first; r <= write_region_second; ++r) {
                             if (r <= read_region_second) continue;
                             if (!zeno_lock_region(r, kWaitForLock)) {
@@ -1876,11 +1694,6 @@ int64_t IZF::grow(uint64_t dangling_hash, uint64_t dangling_count, uint8_t flags
                             runtimedata_->resizing_region_upper.store(write_region_second, 
                                                                       std::memory_order_release);
                         }
-                        // auto end = std::chrono::high_resolution_clock::now();
-                        // auto wait_time_us = std::chrono::duration_cast<std::chrono::nanoseconds>(end - startt).count();
-                        // std::cout << " took " << wait_time_us << " nanoseconds." << std::endl;
-                        // runtimedata_->total_grow_time += wait_time_us;
-                        // std::cout << " (w) write lock updated to " << write_region_first << std::endl;
                     }
                 }
 
@@ -1895,45 +1708,7 @@ int64_t IZF::grow(uint64_t dangling_hash, uint64_t dangling_count, uint8_t flags
             metadata_->bits_per_slot = metadata_->fingerprint_bits + metadata_->value_bits;
             metadata_->quotient_bits += 1;
             metadata_->hash_bits = metadata_->quotient_bits + metadata_->fingerprint_bits;
-
-
-            uint64_t block_index = slot_runend / kSlotsPerBlock;
-            uint64_t datablock_index = (block_index >> kUnitOffsetBits) + 1;
-            uint64_t k = 63ULL - __builtin_clzll(datablock_index);
-            uint64_t floor_k = (k >> 1), mask_up = (1ULL << floor_k) - 1;
-            uint64_t ceil_k = ((k + 1) >> 1);
-            uint64_t directory_index = calculate_A(k) + ((datablock_index >> ceil_k) & mask_up);
-
-            /**
-             * Reallocation of a new data block under RARRAY happens under three conditions:
-             * 1. The data block that the iterator encounters in this loop is different from the one
-             * that was previously seen. Specifically, because the runend might spill over to the 
-             * next data block, we check if the runend of the run is located at a new data block.
-             * 2. The slot is not occupied (i.e., the run is completely removed)
-             * 3. directory_index is not 0, because we have already reallocated a larger data block.
-             */
-            if (static_cast<int64_t>(directory_index) < expanding_block_index 
-                /* targeting an entry from a new data block */
-                && !slot_is_occupied /* completely removed the run */
-                && directory_index != 0 /* first data block is already reallocated */) {
-                datablock_index += 1;   /* Next datablock we want to reallocate */
-                k = 63ULL - __builtin_clzll(datablock_index);
-                floor_k = (k >> 1), mask_up = (1ULL << floor_k) - 1;
-                ceil_k = ((k + 1) >> 1);
-                directory_index = calculate_A(k) + ((datablock_index >> ceil_k) & mask_up);
-
-                qfblock* qb_realloc = index_block_[directory_index];
-                delete[] qb_realloc;
-                uint8_t* qb_realloc_buffer = new uint8_t[metadata_->qfblock_size * 
-                                                        ((1ULL << ceil_k) << kUnitOffsetBits)]{};
-                qb_realloc = reinterpret_cast<qfblock*>(qb_realloc_buffer);
-                index_block_[directory_index] = qb_realloc;
-                --expanding_block_index;
-            }
 #endif
-            // Queue for buffering void sequence inserts. Actual inserts are done after --it. 
-            // Format: [first index, last index, count]
-            std::deque<uint64_t> void_seq_to_insert;
 
             // Encountered an A sequence. This is either a start of a void seq
             // or an end of a void seq. 
@@ -1956,7 +1731,6 @@ int64_t IZF::grow(uint64_t dangling_hash, uint64_t dangling_count, uint8_t flags
                 // intermediate B from a gen N sequence or an added delimiter for deleted As. 
                 if (it.is_occupied()) {
                     status = it.get_entry(fingerprint, value, count);
-                    assert(fingerprint == B);
                     original_count_B = count;
                     // Number of deleted As
                     uint64_t deleted_count_A = 0;
@@ -2149,6 +1923,20 @@ int64_t IZF::grow(uint64_t dangling_hash, uint64_t dangling_count, uint8_t flags
                     zero_buffer.push_back(ZeroBufferEntry(new_hash, count, value));
                 }
             }
+            /**
+             * Insert the buffered void sequences in the queue
+             */
+            if (quotient != 0) {
+                while (!void_seq_to_insert.empty()) {
+                    uint64_t start_quotient = void_seq_to_insert.front();
+                    void_seq_to_insert.pop_front();
+                    uint64_t end_quotient = void_seq_to_insert.front();
+                    void_seq_to_insert.pop_front();
+                    uint64_t count = void_seq_to_insert.front();
+                    void_seq_to_insert.pop_front();
+                    insert_void_sequence(start_quotient, end_quotient, count, kNoLock);
+                }
+            }
 
 #if defined(WIDENING)
             // Switch back to original fingerprint length and corresponding metadata
@@ -2158,18 +1946,6 @@ int64_t IZF::grow(uint64_t dangling_hash, uint64_t dangling_count, uint8_t flags
             metadata_->hash_bits = metadata_->quotient_bits + metadata_->fingerprint_bits;
 #endif
             --it;
-            /**
-             * Insert the buffered void sequences in the queue
-             */
-            while (!void_seq_to_insert.empty()) {
-                uint64_t start_quotient = void_seq_to_insert.front();
-                void_seq_to_insert.pop_front();
-                uint64_t end_quotient = void_seq_to_insert.front();
-                void_seq_to_insert.pop_front();
-                uint64_t count = void_seq_to_insert.front();
-                void_seq_to_insert.pop_front();
-                insert_void_sequence(start_quotient, end_quotient, count, kNoLock);
-            }
             /**
              * The iterator gets marked as `new_region` when it reaches a new locking region. This
              * is because with concurrency, it is not thread safe to read the canonical slot of a 
@@ -2195,7 +1971,7 @@ int64_t IZF::grow(uint64_t dangling_hash, uint64_t dangling_count, uint8_t flags
              */
             if ((canonical_slot <= buffer_length || !it.is_valid()) && buffer_zeno != nullptr && 
                 it.filter_ != buffer_zeno) { 
-                it = iterator<IZF>(buffer_zeno, kMaxPosition);
+                it = iterator(buffer_zeno, kMaxPosition);
                 canonical_slot = it.get_canonical_slot();
             }
 #endif
@@ -2210,14 +1986,24 @@ int64_t IZF::grow(uint64_t dangling_hash, uint64_t dangling_count, uint8_t flags
         metadata_->hash_bits = metadata_->quotient_bits + metadata_->fingerprint_bits;
 #endif
 
+        while (!void_seq_to_insert.empty()) {
+            uint64_t start_quotient = void_seq_to_insert.front();
+            void_seq_to_insert.pop_front();
+            uint64_t end_quotient = void_seq_to_insert.front();
+            void_seq_to_insert.pop_front();
+            uint64_t count = void_seq_to_insert.front();
+            void_seq_to_insert.pop_front();
+            insert_void_sequence(start_quotient, end_quotient, count, kNoLock);
+        }
+
         // Insert the buffered zero-indexed entries to the filter. 
         for (auto new_hash : zero_buffer) {
             int ret;
             if (new_hash.hash == B) {
-                ret = insert(B, 0, new_hash.count, kNoLock | kKeyIsHash);
-                ret = insert(A, 0, new_hash.count, kNoLock | kKeyIsHash);
+                ret = insert(B, 0, new_hash.count, kNoLock | kKeyIsHash | kIsFilterGrowing);
+                ret = insert(A, 0, new_hash.count, kNoLock | kKeyIsHash | kIsFilterGrowing);
             } else {
-                ret = insert(new_hash.hash, new_hash.value, new_hash.count, kNoLock | kKeyIsHash);
+                ret = insert(new_hash.hash, new_hash.value, new_hash.count, kNoLock | kKeyIsHash | kIsFilterGrowing);
             }
             if (ret < 0) {
                 std::cerr << "Failed to insert key: " << new_hash.hash << " into the new filter." 
@@ -2245,7 +2031,7 @@ int64_t IZF::grow(uint64_t dangling_hash, uint64_t dangling_count, uint8_t flags
     // Expansion within an epoch. 
     } else {
         // Iterate through the filter and move items
-        iterator<IZF> it(this, kMaxPosition);
+        // iterator it(this, kMaxPosition);
         if (!it.is_valid()) return 0;
         canonical_slot = it.get_canonical_slot();
         uint64_t run_length;
@@ -2279,11 +2065,7 @@ int64_t IZF::grow(uint64_t dangling_hash, uint64_t dangling_count, uint8_t flags
         value = fingerprint & BITMASK(metadata_->value_bits);
         fingerprint >>= metadata_->value_bits;
         canonical_slot = dangling_hash >> metadata_->bits_per_slot;
-    #if defined(FIXED)
-        quotient = canonical_slot / divide_by;
-    #else
         quotient = static_cast<uint64_t>(std::ceil(static_cast<double>(canonical_slot)/divide_by));
-    #endif
 
         if (period_terminates) {
 #if defined(WIDENING)
@@ -2298,7 +2080,7 @@ int64_t IZF::grow(uint64_t dangling_hash, uint64_t dangling_count, uint8_t flags
             new_hash = quotient << metadata_->fingerprint_bits | fingerprint;
         }
 
-        int ret = insert(new_hash, value, count, kNoLock | kKeyIsHash);
+        int ret = insert(new_hash, value, count, kNoLock | kKeyIsHash | kIsFilterGrowing);
         if (ret < 0) {
             std::cerr << "Failed to insert key: " << new_hash << " into the new filter." << std::endl;
             return ret;
@@ -2311,7 +2093,6 @@ int64_t IZF::grow(uint64_t dangling_hash, uint64_t dangling_count, uint8_t flags
 
         for (uint64_t l = 0; l < runtimedata_->num_locks; ++l) {
             while (runtimedata_->locks[l].lock_.lock_.load(std::memory_order_acquire)) {
-                // print_lock_status();
                 std::this_thread::yield();
             }
         }
@@ -2344,11 +2125,11 @@ int64_t IZF::grow(uint64_t dangling_hash, uint64_t dangling_count, uint8_t flags
     return ret_numkeys;
 }
 
-int64_t IZF::contract() {
+int64_t ZenoFilterVM::contract() {
     uint64_t new_qbits = metadata_->quotient_bits - 1ULL;
-    IZF new_filter(new_qbits, metadata_->hash_bits - 1ULL, metadata_->value_bits, 
-                   metadata_->reciprocal_ratio_, metadata_->hash_mode, metadata_->seed,
-                   metadata_->expansion_threshold);
+    ZenoFilterVM new_filter(new_qbits, metadata_->hash_bits - 1ULL, metadata_->value_bits, 
+                            metadata_->reciprocal_ratio_, metadata_->hash_mode, metadata_->seed,
+                            metadata_->expansion_threshold);
     new_filter.set_auto_resize(metadata_->auto_resize);
 
     // Temporary vector to store zero indexed values to avoid re-inserting
@@ -2374,7 +2155,7 @@ int64_t IZF::contract() {
     int deleted_void_seq_num = 0;
 
     // Iterate through the filter and move items
-    iterator<IZF> it(this, kMaxPosition);
+    iterator<ZenoFilterVM> it(this, kMaxPosition);
     it.disable_region();
     if (!it.is_valid()) {
         std::cerr << "Iterator failed to initialize" << std::endl;
@@ -2389,6 +2170,7 @@ int64_t IZF::contract() {
     // Main loop for moving entries over to the smaller filter
     do {
         status = it.get_entry(fingerprint, value, count);
+        uint64_t saved_fingerprint = fingerprint;
         original_hash = canonical_slot << metadata_->fingerprint_bits | fingerprint;
         int this_encoding_length = delete_key_value(original_hash, value, kNoLock | kKeyIsHash);
         if (this_encoding_length < 0) {
@@ -2551,11 +2333,13 @@ int64_t IZF::contract() {
                 }
             }
         } else {
+            uint64_t saved_quotient = quotient;
             new_hash = extend_fingerprint_length(quotient, fingerprint);
             // If new index is not zero, insert normally
             if (new_hash >> metadata_->bits_per_slot) {
                 ret = new_filter.insert(new_hash, value, count, kNoLock | kKeyIsHash);
                 if (ret < 0) {
+                    std::cerr <<"y";
                     std::cerr << "Failed to insert key: " << new_hash << " into the new filter." 
                                 << std::endl;
                     return ret;
@@ -2602,8 +2386,10 @@ int64_t IZF::contract() {
         new_filter.insert_void_sequence(start_quotient, end_quotient, 1, kNoLock);
     }
 
-    for (qfblock* qbi : index_block_) {
-        delete[] qbi;
+    if (blocks_) {
+        if (munmap(reinterpret_cast<void*>(blocks_), metadata_->vmem_size_)) {
+            exit(EXIT_FAILURE);
+        }
     }
     if (metadata_) {
         delete metadata_;
@@ -2619,7 +2405,7 @@ int64_t IZF::contract() {
 }
 
 // TODO: change logic to query for longest matching kv, similar to remove_internal
-uint64_t IZF::query(uint64_t key, uint64_t& value, uint8_t flags) {
+uint64_t ZenoFilterVM::query(uint64_t key, uint64_t& value, uint8_t flags) {
     if (GET_KEY_HASH(flags) != kKeyIsHash) {
         if (metadata_->hash_mode == hashmode::Default) {
             // Use the upper `hash_bit` bits of the hashed result
@@ -2652,23 +2438,6 @@ uint64_t IZF::query(uint64_t key, uint64_t& value, uint8_t flags) {
         
         if (!zeno_lock_region_conditionally(start_region, flags)) {
             return 0;
-            // hash = adjust_fingerprint_length(hash_bucket_index, hash_remainder);
-            // // Now every attempt to lock a region is a second try
-            // flags |= kSecondTryLock;
-            // start_region = hash_bucket_index / kNumSlotsToLock;
-            // if (start_region > runtimedata_->num_locks) {
-            //     std::cerr << "error!!!!!" << std::endl;
-            //     std::cerr << "start_region:" << start_region << std::endl;
-            //     std::cerr << "num_locks   :" << runtimedata_->num_locks << std::endl;
-            //     abort();
-            // }
-            // while (runtimedata_->resizing_region_upper.load(std::memory_order_acquire) >= 
-            //        start_region) {
-            //     std::this_thread::yield();
-            // }
-            // if (!zeno_lock_region_conditionally(start_region, flags)) {
-            //     return kErrCouldntLock;
-            // }
         } else {
             // Successfully locked target region
         }
@@ -2714,8 +2483,34 @@ uint64_t IZF::query(uint64_t key, uint64_t& value, uint8_t flags) {
     return 0;
 }
 
+uint64_t ZenoFilterVM::concurrent_query(uint64_t key, uint64_t& value, uint8_t flags) {
+    uint64_t original_key;
+    if (GET_KEY_HASH(flags) != kKeyIsHash) {
+        if (metadata_->hash_mode == hashmode::Default) {
+            // Use the upper `hash_bit` bits of the hashed result
+            original_key = MurmurHash64A((void*)&key, sizeof(key), metadata_->seed);
+            key = (original_key >> (64ULL - metadata_->hash_bits));
+        }
+        else if (metadata_->hash_mode == hashmode::Invertible)
+            key = hash_64(key, BITMASK(metadata_->hash_bits));
+        if (!metadata_->is_period_) sanitize_hash(key);
+    }
+    uint64_t count = query(key, value, kWaitForLock | kKeyIsHash);
+    if (flags & kWaitForLock) {
+        if (count == 0 && runtimedata_->resizing_region.load(std::memory_order_acquire) >= 0) {
+            // query again
+            key = original_key >> (64ULL - metadata_->hash_bits - 1);
+            return count;
+        } else {
+            return count;
+        }
+    } else {
+        return count;
+    }
+}
+
 inline
-int IZF::insert1(uint64_t hash, uint8_t flags) {
+int ZenoFilterVM::insert1(uint64_t hash, uint8_t flags) {
     int ret_distance = 0;
     uint64_t hash_remainder = hash & BITMASK(metadata_->bits_per_slot);
     uint64_t hash_bucket_index = hash >> metadata_->bits_per_slot;
@@ -2731,7 +2526,6 @@ int IZF::insert1(uint64_t hash, uint8_t flags) {
             std::this_thread::yield();
         }
 
-        // std::cout << "(1) Attempting lock on region " << start_region << " ";
         if (!zeno_lock_region_conditionally(start_region, flags)) {
             hash = adjust_fingerprint_length(hash_bucket_index, hash_remainder);
             hash_bucket_block_offset = hash_bucket_index % kSlotsPerBlock;
@@ -2739,7 +2533,6 @@ int IZF::insert1(uint64_t hash, uint8_t flags) {
             flags |= kSecondTryLock;
             clusterend_region = hash_bucket_index / kNumSlotsToLock;
             start_region = clusterend_region;
-            // std::cout << "(2) failed.. retrying on region " << start_region << std::endl;
             while (runtimedata_->resizing_region_upper.load(std::memory_order_acquire) >= 
                    clusterend_region) {
                 std::this_thread::yield();
@@ -2748,20 +2541,15 @@ int IZF::insert1(uint64_t hash, uint8_t flags) {
                 return kErrCouldntLock;
             }
         } else {
-            // std::cout << "(B) " << +(get_block(hash_bucket_index / kSlotsPerBlock)->offset) << std::endl;
+            // Locked region
         }
     }
-    uint64_t esi = 1, pop = 0;
     if (is_empty(hash_bucket_index)) {
         METADATA_WORD(runends, hash_bucket_index) |= 1ULL << (hash_bucket_block_offset % 64);
         set_slot(hash_bucket_index, hash_remainder);
         METADATA_WORD(occupieds, hash_bucket_index) |= 1ULL << (hash_bucket_block_offset % 64);
         
         ret_distance = 0;
-        // modify_metadata(&metadata_->nelts, 1);
-        // modify_metadata(&metadata_->ndistinct_elts, 1);
-        // modify_metadata(&metadata_->noccupied_slots, 1);
-        // PC
         modify_metadata(metadata_->pc_noccupied_slots, 1);
     } else {
         uint64_t runend_index;
@@ -2779,7 +2567,6 @@ int IZF::insert1(uint64_t hash, uint8_t flags) {
                     clusterend_region) {
                     std::this_thread::yield();
                 }
-                // std::cout << "(4) failed locking cluster. retrying on region " << start_region << std::endl;
                 if (!zeno_lock_region_conditionally(clusterend_region, flags)) {
                     return kErrCouldntLock;
                 }
@@ -2800,11 +2587,9 @@ int IZF::insert1(uint64_t hash, uint8_t flags) {
                     return kErrCouldntLock;
                 }
             } else {
-                // std::cout << "(3) successfully locked cluster to " << clusterend_region << std::endl;
+                // Locked region
             }
         }
-        
-        // runend_index = run_end(hash_bucket_index);
 
         int operation = 0; /* Insert into empty bucket */
         uint64_t insert_index = runend_index + 1;
@@ -2867,7 +2652,6 @@ int IZF::insert1(uint64_t hash, uint8_t flags) {
                 operation = 1;
                 insert_index = runstart_index;
                 new_value = hash_remainder;
-                // modify_metadata(&metadata_->ndistinct_elts, 1);
 
             /* This is the first time we're inserting this remainder, but
                 there are larger remainders already in the run. */
@@ -2875,7 +2659,6 @@ int IZF::insert1(uint64_t hash, uint8_t flags) {
                 operation = 2; /* Inserting */
                 insert_index = runstart_index;
                 new_value = hash_remainder;
-                // modify_metadata(&metadata_->ndistinct_elts, 1);
 
             /* Cases below here: we're incrementing the (simple or
                 extended) counter for this remainder. */
@@ -2963,12 +2746,10 @@ int IZF::insert1(uint64_t hash, uint8_t flags) {
                 }
             }
         } else {
-            // modify_metadata(&metadata_->ndistinct_elts, 1);
         }
 
         if (operation >= 0) {
             uint64_t empty_slot_index = find_first_empty_slot(runend_index + 1);
-            esi = empty_slot_index;
             shift_remainders(insert_index, empty_slot_index);
 
             set_slot(insert_index, new_value);
@@ -3005,11 +2786,8 @@ int IZF::insert1(uint64_t hash, uint8_t flags) {
                     get_block(i)->offset++;
                 assert(get_block(i)->offset != 0);
             }
-            // modify_metadata(&metadata_->noccupied_slots, 1);
             modify_metadata(metadata_->pc_noccupied_slots, 1);
         }
-        pop = operation;
-        // modify_metadata(&metadata_->nelts, 1);
         METADATA_WORD(occupieds, hash_bucket_index) |= 1ULL << (hash_bucket_block_offset % 64);
     }
 
@@ -3025,7 +2803,7 @@ int IZF::insert1(uint64_t hash, uint8_t flags) {
 }
 
 inline
-int IZF::insertN(uint64_t hash, uint64_t count, uint8_t flags) {
+int ZenoFilterVM::insertN(uint64_t hash, uint64_t count, uint8_t flags) {
     int ret_distance = 0;
     uint64_t hash_remainder = hash & BITMASK(metadata_->bits_per_slot);
     uint64_t hash_bucket_index = hash >> metadata_->bits_per_slot;
@@ -3043,7 +2821,7 @@ int IZF::insertN(uint64_t hash, uint64_t count, uint8_t flags) {
         METADATA_WORD(runends, hash_bucket_index) |= 1ULL << (hash_bucket_block_offset % 64);
         set_slot(hash_bucket_index, hash_remainder);
         METADATA_WORD(occupieds, hash_bucket_index) |= 1ULL << (hash_bucket_block_offset % 64);
-        
+
         modify_metadata(metadata_->pc_noccupied_slots, 1);
         if (count > 1) {
             insertN(hash, count - 1, kNoLock);
@@ -3120,7 +2898,6 @@ int IZF::insertN(uint64_t hash, uint64_t count, uint8_t flags) {
             }
         }
         METADATA_WORD(occupieds, hash_bucket_index) |= 1ULL << (hash_bucket_block_offset % 64);
-        
     }
 
     if (GET_NO_LOCK(flags) != kNoLock) {
@@ -3131,7 +2908,7 @@ int IZF::insertN(uint64_t hash, uint64_t count, uint8_t flags) {
 }
 
 inline
-int IZF::insert_void_sequence(uint64_t begin, uint64_t end, uint64_t count, uint8_t flags) {
+int ZenoFilterVM::insert_void_sequence(uint64_t begin, uint64_t end, uint64_t count, uint8_t flags) {
     // TODO
     uint64_t A = BITMASK(metadata_->fingerprint_bits);
     uint64_t B = A - 1;
@@ -3148,23 +2925,16 @@ int IZF::insert_void_sequence(uint64_t begin, uint64_t end, uint64_t count, uint
         int64_t runstart_index = begin == 0
                                ? 0
                                : run_end(begin - 1) + 1;
-        bool ret;
+        int ret = 0;
 
         // Empty bucket. Because we are scanning right to left, if a slot has
         // its is_occupied bit not set, we are guaranteed that the slot does not
         // contain any entry from any existing runs. 
         if (!is_occupied(begin)) {
-            uint64_t* p = encode_counter(A, 1, &new_values[67]);
-            p = encode_counter(B, count, p);
-
-            ret = shift_for_inserts(0,
-                                    begin,
-                                    runstart_index, 
-                                    p, 
-                                    &new_values[67] - p,
-                                    0);
-            METADATA_WORD(occupieds, begin) |= 1ULL << (begin % 64);
-            if (!ret) return kErrNoSpace;
+            ret = insert1((begin << metadata_->fingerprint_bits) | A, kNoLock | kKeyIsHash);
+            if (ret < 0) return kErrNoSpace;
+            ret += insertN((begin << metadata_->fingerprint_bits) | B, count, kNoLock | kKeyIsHash);
+            if (ret < 0) return kErrNoSpace;
             // TODO: increase metadata for number of void entries
         } else {
             uint64_t runend_index = run_end(begin);
@@ -3215,8 +2985,6 @@ int IZF::insert_void_sequence(uint64_t begin, uint64_t end, uint64_t count, uint
                                         &new_values[67] - p,
                                         0);
             }
-            
-            
         }
     
     // Inserting gen N (N>1) void sequence. Encoding: [A][B]..[B][A]
@@ -3228,7 +2996,7 @@ int IZF::insert_void_sequence(uint64_t begin, uint64_t end, uint64_t count, uint
             }
         }
 
-        bool ret;
+        int ret = 0;
         uint64_t runstart_index = begin == 0
                                 ? 0
                                 : run_end(begin - 1) + 1;
@@ -3237,24 +3005,23 @@ int IZF::insert_void_sequence(uint64_t begin, uint64_t end, uint64_t count, uint
         ret = insert_A_internal(begin, runstart_index, count);
         runstart_index = run_end(begin) + 1;
         for (uint64_t i = begin + 1; i < end; ++i) {
-            ret = insert_B_internal(i, runstart_index, count);
+            ret += insert_B_internal(i, runstart_index, count);
             runstart_index = run_end(i) + 1;
         }
-        ret = insert_A_internal(end, runstart_index, count);
-
+        ret += insert_A_internal(end, runstart_index, count);
     }
 
     return 0;
 }
 
 inline
-int IZF::insert_A_internal(uint64_t& hash_index, uint64_t& runstart_index, uint64_t count) {
+int ZenoFilterVM::insert_A_internal(uint64_t& hash_index, uint64_t& runstart_index, uint64_t count) {
     // TODO
     uint64_t A = BITMASK(metadata_->fingerprint_bits);
     uint64_t B = A - 1;
     
     uint64_t new_values[67];
-    bool ret;
+    int ret = 0;
     if (!is_occupied(hash_index)) {
         if (count == 1) {
             return insert1((hash_index << metadata_->fingerprint_bits) | A, kNoLock | kKeyIsHash);
@@ -3308,9 +3075,9 @@ int IZF::insert_A_internal(uint64_t& hash_index, uint64_t& runstart_index, uint6
             } else {
                 assert(current_end == runend_index);
                 uint64_t* p = encode_counter(A, count, &new_values[67]);
-                ret = shift_for_inserts(1, 
+                ret = shift_for_inserts(2, 
                                         hash_index, 
-                                        current_end + 1,
+                                        runstart_index,
                                         p,
                                         &new_values[67] - p,
                                         0);
@@ -3331,13 +3098,13 @@ int IZF::insert_A_internal(uint64_t& hash_index, uint64_t& runstart_index, uint6
 }
 
 inline
-int IZF::insert_B_internal(uint64_t& hash_index, uint64_t& runstart_index, uint64_t count) {
+int ZenoFilterVM::insert_B_internal(uint64_t& hash_index, uint64_t& runstart_index, uint64_t count) {
     // TODO
     uint64_t A = BITMASK(metadata_->fingerprint_bits);
     uint64_t B = A - 1;
 
     uint64_t new_values[67];
-    bool ret;
+    int ret = 0;
     if (!is_occupied(hash_index)) {
         if (count == 1) {
             return insert1((hash_index << metadata_->fingerprint_bits) | B, kNoLock | kKeyIsHash);
@@ -3456,8 +3223,7 @@ int IZF::insert_B_internal(uint64_t& hash_index, uint64_t& runstart_index, uint6
 }
 
 inline
-int IZF::remove_longest_internal(uint64_t hash, uint64_t &count, 
-                                  uint8_t runtime_lock) {
+int ZenoFilterVM::remove_longest_internal(uint64_t hash, uint64_t &count, uint8_t runtime_lock) {
     int ret_numfreedslots = 0;
     uint64_t hash_remainder = hash & BITMASK(metadata_->bits_per_slot);
     uint64_t hash_bucket_index = hash >> metadata_->bits_per_slot;
@@ -3709,7 +3475,7 @@ int IZF::remove_longest_internal(uint64_t hash, uint64_t &count,
 }
 
 
-inline int IZF::remove_internal(uint64_t hash, uint64_t count, uint8_t runtime_lock) {
+inline int ZenoFilterVM::remove_internal(uint64_t hash, uint64_t count, uint8_t runtime_lock) {
     int ret_numfreedslots = 0;
     uint64_t hash_remainder = hash & BITMASK(metadata_->bits_per_slot);
     uint64_t hash_bucket_index = hash >> metadata_->bits_per_slot;
@@ -3755,9 +3521,6 @@ inline int IZF::remove_internal(uint64_t hash, uint64_t count, uint8_t runtime_l
                                             &new_values[67] - p,
                                             current_end - runstart_index + 1);
 
-    // update the nelements.
-    // modify_metadata(&qf->runtimedata->pc_nelts, -count);
-
     if (GET_NO_LOCK(runtime_lock) != kNoLock) {
         zeno_unlock(hash_bucket_index, /*small*/ false);
     }
@@ -3765,25 +3528,9 @@ inline int IZF::remove_internal(uint64_t hash, uint64_t count, uint8_t runtime_l
     return ret_numfreedslots;
 }
 
-inline
-uint64_t IZF::calculate_A(const uint64_t& k) const {
-    return (1ULL << (k >> 1ULL)) * (2ULL + (k & 1ULL)) - 2ULL;
-}
-
-inline
-const IZF::indexABC IZF::entry_lookup_internal(const uint64_t& index) const {
-    const uint64_t j = index + 1;
-    uint64_t k = 64 - __builtin_clzll(j) - 1;
-    uint64_t floor_k = (k >> 1), mask_up = (1ULL << floor_k) - 1;
-    uint64_t ceil_k = ((k + 1) >> 1), mask_low = (1ULL << ceil_k) - 1;
-    return indexABC(
-        calculate_A(k), ((j >> ceil_k) & mask_up), (j & mask_low)
-    );
-}
-
-inline bool IZF::zeno_lock(uint64_t hash_bucket_index, 
-                            bool small, 
-                            uint8_t runtime_lock) {
+inline bool ZenoFilterVM::zeno_lock(uint64_t hash_bucket_index, 
+                                    bool small, 
+                                    uint8_t runtime_lock) {
     uint64_t hash_bucket_lock_offset  = hash_bucket_index % kNumSlotsToLock;
     // Read-lock the spinlock array. This blocks the expansion thread from modifying the spinlock
     // array when threads may be spinning on it. 
@@ -3870,7 +3617,7 @@ inline bool IZF::zeno_lock(uint64_t hash_bucket_index,
     return true;
 }
 
-inline void IZF::zeno_unlock(uint64_t hash_bucket_index, bool small) {
+inline void ZenoFilterVM::zeno_unlock(uint64_t hash_bucket_index, bool small) {
     uint64_t hash_bucket_lock_offset  = hash_bucket_index % kNumSlotsToLock;
     if (small) {
         if (kNumSlotsToLock - hash_bucket_lock_offset <= kClusterSize) {
@@ -3885,18 +3632,18 @@ inline void IZF::zeno_unlock(uint64_t hash_bucket_index, bool small) {
     }
 }
 
-inline bool IZF::zeno_lock_region(int64_t lock_region_index, uint8_t runtime_lock) {
+inline bool ZenoFilterVM::zeno_lock_region(int64_t lock_region_index, uint8_t runtime_lock) {
     if (!spin_lock(&runtimedata_->locks[lock_region_index], runtime_lock)) {
         return false;
     }
     return true;
 }
 
-inline void IZF::zeno_unlock_region(int64_t lock_region_index) {
+inline void ZenoFilterVM::zeno_unlock_region(int64_t lock_region_index) {
     spin_unlock(&runtimedata_->locks[lock_region_index]);
 }
 
-inline void IZF::zeno_unlock_range(int64_t start_region, int64_t end_region) {
+inline void ZenoFilterVM::zeno_unlock_range(int64_t start_region, int64_t end_region) {
     while (true) {
         zeno_unlock_region(end_region);
         if (end_region == start_region) break;
@@ -3904,7 +3651,7 @@ inline void IZF::zeno_unlock_range(int64_t start_region, int64_t end_region) {
     }
 }
 
-inline bool IZF::zeno_lock_region_conditionally(int64_t lock_region_index, uint8_t runtime_lock) {
+inline bool ZenoFilterVM::zeno_lock_region_conditionally(int64_t lock_region_index, uint8_t runtime_lock) {
     // Read-lock of the spinlock array must be done before calling this method. 
     if (lock_region_index <= runtimedata_->resizing_region.load(std::memory_order_acquire)) {
         if (!spin_lock_conditionally(&runtimedata_->locks[lock_region_index], lock_region_index, 
@@ -3925,7 +3672,7 @@ inline bool IZF::zeno_lock_region_conditionally(int64_t lock_region_index, uint8
     return true;
 }
 
-inline uint64_t IZF::get_slot(const uint64_t& index) const {
+inline uint64_t ZenoFilterVM::get_slot(const uint64_t& index) const {
     assert(index < metadata_->xnslots);
     /* Should use __uint128_t to support up to 64-bit remainders, but gcc seems
      * to generate buggy code.  :/  */
@@ -3938,7 +3685,7 @@ inline uint64_t IZF::get_slot(const uint64_t& index) const {
                                 BITMASK(metadata_->bits_per_slot);
 }
 
-inline void IZF::set_slot(const uint64_t& index, const uint64_t& value) {
+inline void ZenoFilterVM::set_slot(const uint64_t& index, const uint64_t& value) {
     assert(index < metadata_->xnslots);
     /* Should use __uint128_t to support up to 64-bit remainders, but gcc seems
      * to generate buggy code.  :/  */
@@ -3960,7 +3707,7 @@ inline void IZF::set_slot(const uint64_t& index, const uint64_t& value) {
     memcpy(p, &t, sizeof(t));
 }
 
-inline uint64_t IZF::block_offset(const uint64_t& blockidx) const {
+inline uint64_t ZenoFilterVM::block_offset(const uint64_t& blockidx) const {
 	/* If we have extended counters and a 16-bit (or larger) offset field, then 
     we can safely ignore the possibility of overflowing that field. */
 	if (sizeof(std::declval<qfblock>().offset) > 1 ||
@@ -3969,7 +3716,7 @@ inline uint64_t IZF::block_offset(const uint64_t& blockidx) const {
 	return run_end(kSlotsPerBlock * blockidx - 1) - kSlotsPerBlock * blockidx + 1;
 }
 
-inline uint64_t IZF::run_end(const uint64_t& hash_bucket_index) const {
+inline uint64_t ZenoFilterVM::run_end(const uint64_t& hash_bucket_index) const {
     uint64_t bucket_block_index = hash_bucket_index / kSlotsPerBlock;
 	uint64_t bucket_intrablock_offset = hash_bucket_index % kSlotsPerBlock;
 	uint64_t bucket_blocks_offset = block_offset(bucket_block_index);
@@ -4012,56 +3759,9 @@ inline uint64_t IZF::run_end(const uint64_t& hash_bucket_index) const {
         return runend_index;
 }
 
-inline uint64_t IZF::run_end2(const uint64_t& hash_bucket_index) const {
-    uint64_t bucket_block_index = hash_bucket_index / kSlotsPerBlock;
-	uint64_t bucket_intrablock_offset = hash_bucket_index % kSlotsPerBlock;
-	uint64_t bucket_blocks_offset = block_offset(bucket_block_index);
-
-    uint64_t bucket_intrablock_rank = bitrank(get_block(bucket_block_index)->occupieds[0],
-                                                bucket_intrablock_offset);
-
-	if (bucket_intrablock_rank == 0) {
-        if (bucket_blocks_offset <= bucket_intrablock_offset)
-        	return hash_bucket_index;
-        else
-        	return kSlotsPerBlock * bucket_block_index + bucket_blocks_offset - 1;
-	}
-
-	uint64_t runend_block_index  = bucket_block_index + bucket_blocks_offset / kSlotsPerBlock;
-	uint64_t runend_ignore_bits = bucket_blocks_offset % kSlotsPerBlock;
-	uint64_t runend_rank = bucket_intrablock_rank - 1;
-    uint64_t runend_block_offset = bitselectv(get_block(runend_block_index)->runends[0],
-                                                        runend_ignore_bits, runend_rank);
-	if (runend_block_offset == kSlotsPerBlock) {
-        if (bucket_blocks_offset == 0 && bucket_intrablock_rank == 0) {
-            /* The block begins in empty space, and this bucket is in that region of empty space */
-            return hash_bucket_index;
-        } else {
-            do {
-                runend_rank -= 
-                        popcntv(get_block(runend_block_index)->runends[0], runend_ignore_bits);
-                runend_block_index++;
-                runend_ignore_bits = 0;
-                runend_block_offset = bitselectv(get_block(runend_block_index)->runends[0],
-                                                 runend_ignore_bits, runend_rank);
-            } while (runend_block_offset == kSlotsPerBlock);
-        }
-    }
-
-    if (metadata_->quotient_bits == 14 && hash_bucket_index == 63) {
-        std::cout << "breaking" << std::endl;
-        abort();
-    }
-
-    uint64_t runend_index = kSlotsPerBlock * runend_block_index + runend_block_offset;
-    if (runend_index < hash_bucket_index)
-        return hash_bucket_index;
-    else
-        return runend_index;
-}
-
-inline int IZF::run_end_threadsafe(const uint64_t& hash_bucket_index, uint64_t& runend_index,
-                                    int64_t& clusterend_region, uint8_t flags) {
+inline int ZenoFilterVM::run_end_threadsafe(const uint64_t& hash_bucket_index, 
+                                            uint64_t& runend_index, int64_t& clusterend_region, 
+                                            uint8_t flags) {
     // This region is already locked. 
     int64_t current_locked_region = clusterend_region;
     // Set the new clusterend region as current region (default)
@@ -4088,7 +3788,6 @@ inline int IZF::run_end_threadsafe(const uint64_t& hash_bucket_index, uint64_t& 
     // Overflowed to next qfblock. Is this a new region?
     int64_t last_region_to_lock = runend_block_index * kSlotsPerBlock / kNumSlotsToLock;
     if (last_region_to_lock > current_locked_region) {
-        // if (!zeno_lock_region(last_region_to_lock, flags)) {
         if (!zeno_lock_region_conditionally(last_region_to_lock, flags)) {
             return kErrCouldntLock;
         }
@@ -4134,7 +3833,7 @@ inline int IZF::run_end_threadsafe(const uint64_t& hash_bucket_index, uint64_t& 
     return 0;
 }
 
-inline int64_t IZF::cluster_end(const uint64_t hash_bucket_index, const uint64_t padding) { 
+inline int64_t ZenoFilterVM::cluster_end(const uint64_t hash_bucket_index, const uint64_t padding) { 
     // Acquire the runend index of the given hash_bucket_index. 
     uint64_t runend_index = run_end(hash_bucket_index + padding);
 
@@ -4151,9 +3850,9 @@ inline int64_t IZF::cluster_end(const uint64_t hash_bucket_index, const uint64_t
     return new_runend_index / kNumSlotsToLock;
 }
 
-inline int IZF::cluster_end_threadsafe(const uint64_t& hash_bucket_index, uint64_t& runend_index, 
-                                        int64_t& clusterend_region, uint64_t& clusterend_index, 
-                                        uint8_t flags) { 
+inline int ZenoFilterVM::cluster_end_threadsafe(const uint64_t& hash_bucket_index, 
+                                                uint64_t& runend_index, int64_t& clusterend_region, 
+                                                uint64_t& clusterend_index, uint8_t flags) { 
     // Acquire the runend index of the given hash_bucket_index. 
     int res = run_end_threadsafe(hash_bucket_index, runend_index, clusterend_region, flags);
     if (res == kErrCouldntLock) return res;
@@ -4174,8 +3873,8 @@ inline int IZF::cluster_end_threadsafe(const uint64_t& hash_bucket_index, uint64
     return 0;
 }
 
-inline int IZF::zeno_lock_cluster(uint64_t index, uint64_t& runend, int64_t& clusterend_region, 
-                                   uint8_t flags) {
+inline int ZenoFilterVM::zeno_lock_cluster(uint64_t index, uint64_t& runend, 
+                                           int64_t& clusterend_region, uint8_t flags) {
     uint64_t clusterend = 0;
     uint64_t start_region = clusterend_region;
     
@@ -4238,7 +3937,7 @@ inline int IZF::zeno_lock_cluster(uint64_t index, uint64_t& runend, int64_t& clu
     return 0;
 }
 
-inline int32_t IZF::offset_lower_bound(const uint64_t& slot_index) const {
+inline int32_t ZenoFilterVM::offset_lower_bound(const uint64_t& slot_index) const {
     const qfblock* b = get_block(slot_index / kSlotsPerBlock);
     const uint64_t slot_offset = slot_index % kSlotsPerBlock;
     const uint64_t boffset = b->offset;
@@ -4251,7 +3950,7 @@ inline int32_t IZF::offset_lower_bound(const uint64_t& slot_index) const {
     return boffset - slot_offset + __builtin_popcountll(occupieds);
 }
 
-inline uint64_t IZF::find_first_empty_slot(uint64_t from) const {
+inline uint64_t ZenoFilterVM::find_first_empty_slot(uint64_t from) const {
     do {
         int32_t t = offset_lower_bound(from);
         assert(t >= 0);
@@ -4262,7 +3961,7 @@ inline uint64_t IZF::find_first_empty_slot(uint64_t from) const {
     return from;
 }
 
-inline void IZF::shift_remainders(const uint64_t& start_index, const uint64_t& empty_index) {
+inline void ZenoFilterVM::shift_remainders(const uint64_t& start_index, const uint64_t& empty_index) {
 	uint64_t last_word = (empty_index + 1) * metadata_->bits_per_slot / 64;
 	const uint64_t first_word = start_index * metadata_->bits_per_slot / 64;
 	int bend = ((empty_index + 1) * metadata_->bits_per_slot) % 64;
@@ -4280,7 +3979,7 @@ inline void IZF::shift_remainders(const uint64_t& start_index, const uint64_t& e
                                               bstart, bend, metadata_->bits_per_slot);
 }
 
-inline void IZF::shift_slots(int64_t first, uint64_t last, uint64_t distance) {
+inline void ZenoFilterVM::shift_slots(int64_t first, uint64_t last, uint64_t distance) {
     if (distance == 1) {
         shift_remainders(first, last + 1);
     } else {
@@ -4290,7 +3989,7 @@ inline void IZF::shift_slots(int64_t first, uint64_t last, uint64_t distance) {
 }
 
 
-inline void IZF::shift_runends(int64_t first, uint64_t last, uint64_t distance) {
+inline void ZenoFilterVM::shift_runends(int64_t first, uint64_t last, uint64_t distance) {
     assert(last < metadata_->xnslots && distance < 64);
     uint64_t first_word = first / 64;
     uint64_t bstart = first % 64;
@@ -4322,12 +4021,12 @@ inline void IZF::shift_runends(int64_t first, uint64_t last, uint64_t distance) 
 }
 
 inline
-bool IZF::shift_for_inserts(int operation, 
-                           uint64_t slot_index, 
-                           uint64_t overwrite_index,
-                           const uint64_t* remainders, 
-                           uint64_t total_remainders, 
-                           uint64_t noverwrites) {
+bool ZenoFilterVM::shift_for_inserts(int operation, 
+                                     uint64_t slot_index, 
+                                     uint64_t overwrite_index,
+                                     const uint64_t* remainders, 
+                                     uint64_t total_remainders, 
+                                     uint64_t noverwrites) {
     uint64_t empties[67] = {0,};
     uint64_t i;
     int64_t j;
@@ -4391,19 +4090,18 @@ bool IZF::shift_for_inserts(int operation,
         set_slot(overwrite_index + i, remainders[i]); 
     }
 
-    // modify_metadata(&metadata_->noccupied_slots, ninserts);
     modify_metadata(metadata_->pc_noccupied_slots, ninserts);
 
     return true;
 }
 
 inline
-int IZF::shift_for_deletes(int operation, 
-                           uint64_t bucket_index, 
-                           uint64_t overwrite_index,
-                           const uint64_t* remainders, 
-                           uint64_t total_remainders, 
-                           uint64_t old_length) {
+int ZenoFilterVM::shift_for_deletes(int operation, 
+                                    uint64_t bucket_index, 
+                                    uint64_t overwrite_index,
+                                    const uint64_t* remainders, 
+                                    uint64_t total_remainders, 
+                                    uint64_t old_length) {
     uint64_t i;
 
     // Update the slots
@@ -4488,19 +4186,13 @@ int IZF::shift_for_deletes(int operation,
     }
 
     int num_slots_freed = old_length - total_remainders;
-    // modify_metadata(&metadata_->noccupied_slots, - num_slots_freed);
     modify_metadata(metadata_->pc_noccupied_slots, - num_slots_freed);
-    /*qf->metadata->noccupied_slots -= (old_length - total_remainders);*/
-    if (!total_remainders) {
-        // modify_metadata(&metadata_->ndistinct_elts, -1);
-        /*qf->metadata->ndistinct_elts--;*/
-    }
 
     return ret_current_distance;
 }
 
 inline
-uint64_t* IZF::delete_run(uint64_t canonical_slot, uint64_t& run_length) {
+uint64_t* ZenoFilterVM::delete_run(uint64_t canonical_slot, uint64_t& run_length) {
     uint64_t runstart_index = canonical_slot == 0 
                             ? 0 
                             : run_end(canonical_slot - 1) + 1;
@@ -4520,7 +4212,7 @@ uint64_t* IZF::delete_run(uint64_t canonical_slot, uint64_t& run_length) {
 }
 
 inline
-uint64_t IZF::insert_run(uint64_t canonical_slot, uint64_t* buffer, uint64_t run_length) {
+uint64_t ZenoFilterVM::insert_run(uint64_t canonical_slot, uint64_t* buffer, uint64_t run_length) {
     uint64_t runstart_index = canonical_slot == 0 
                             ? 0 
                             : run_end(canonical_slot - 1) + 1;
@@ -4541,7 +4233,7 @@ uint64_t IZF::insert_run(uint64_t canonical_slot, uint64_t* buffer, uint64_t run
 }
 
 inline
-uint64_t IZF::count_key_value(uint64_t key, uint64_t value, uint8_t flags) const {
+uint64_t ZenoFilterVM::count_key_value(uint64_t key, uint64_t value, uint8_t flags) const {
     if (GET_KEY_HASH(flags) != kKeyIsHash) {
         auto hash_mode = get_hashmode();
         if (hash_mode == hashmode::Default) {
@@ -4576,7 +4268,7 @@ uint64_t IZF::count_key_value(uint64_t key, uint64_t value, uint8_t flags) const
     return 0;
 }
 
-uint64_t* IZF::encode_counter(uint64_t remainder, uint64_t counter, uint64_t* slots) {
+uint64_t* ZenoFilterVM::encode_counter(uint64_t remainder, uint64_t counter, uint64_t* slots) {
     uint64_t digit = remainder;
     uint64_t base = (1ULL << metadata_->bits_per_slot) - 1;
     if (remainder == base) base -= 1;   /* if encoding for A (11..1), disallow counter to be B */
@@ -4633,7 +4325,7 @@ uint64_t* IZF::encode_counter(uint64_t remainder, uint64_t counter, uint64_t* sl
     return p;
 }
 
-uint64_t IZF::decode_counter(uint64_t index, uint64_t& remainder, uint64_t& count) const {
+uint64_t ZenoFilterVM::decode_counter(uint64_t index, uint64_t& remainder, uint64_t& count) const {
     uint64_t base;
     uint64_t rem;
     uint64_t cnt;

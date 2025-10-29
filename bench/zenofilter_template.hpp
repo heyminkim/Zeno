@@ -1,20 +1,20 @@
 #pragma once
 
 #include "base.hpp"
-#include "izf.hpp"
+#include "zenofilter.hpp"
 
 namespace zeno_bench {
 
-class IZF : public Filter {
+class ZenoFilter : public Filter {
     public:
-    IZF(uint64_t exp_size, uint64_t hash_bits, uint64_t expansion_ratio=1, double threshold=0.9)
+    ZenoFilter(uint64_t exp_size, uint64_t hash_bits, uint64_t expansion_ratio=1, double threshold=0.9)
     : valid(true) {
         expansion_ratio_ = expansion_ratio;
-        filter = new zeno::IZF(exp_size, hash_bits, 0, expansion_ratio, zeno::hashmode::Default, 0,
-                               threshold);
+        filter = new zeno::ZenoFilter(exp_size, hash_bits, 0, expansion_ratio, 
+                                      zeno::hashmode::Default, 0, threshold);
     }
 
-    ~IZF() {
+    ~ZenoFilter() {
         delete filter;
     }
 
@@ -62,9 +62,9 @@ class IZF : public Filter {
     }
 
     private:
-    zeno::IZF* filter;
+    zeno::ZenoFilter* filter;
     uint64_t expansion_ratio_;
     bool valid;
-};  // class IZF
+};  // class ZenoFilter
 
 }   // namespace zeno_bench

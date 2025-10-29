@@ -11,13 +11,13 @@
 #include "util.hpp"
 #include "base.hpp"
 
-#include "vzf_template.hpp"
+#include "zenofiltervm_template.hpp"
 
 #include "../util/cxxopts.hpp"
 
 std::atomic<bool> stop_flag{false};
 
-void insert_keys(zeno_bench::VZF* filter, const uint64_t* keys_start, uint64_t num_keys, 
+void insert_keys(zeno_bench::ZenoFilterVM* filter, const uint64_t* keys_start, uint64_t num_keys, 
                  uint64_t interval, std::vector<uint64_t>& result, 
                  std::chrono::_V2::steady_clock::time_point start_time) {
     using clock = std::chrono::steady_clock;
@@ -35,7 +35,7 @@ void insert_keys(zeno_bench::VZF* filter, const uint64_t* keys_start, uint64_t n
     }
 }
 
-void query_keys(zeno_bench::VZF* filter, const uint64_t* keys_start, uint64_t num_keys, 
+void query_keys(zeno_bench::ZenoFilterVM* filter, const uint64_t* keys_start, uint64_t num_keys, 
                  uint64_t interval, std::vector<uint64_t>& result, 
                  std::chrono::_V2::steady_clock::time_point start_time) {
     using clock = std::chrono::steady_clock;
@@ -183,7 +183,7 @@ int main(int argc, char** argv) {
     bool auto_resize = true;
     
     // Configure filter
-    zeno_bench::VZF* filter = new zeno_bench::VZF(qbits, qbits + fbits, 1, 0.8);
+    zeno_bench::ZenoFilterVM* filter = new zeno_bench::ZenoFilterVM(qbits, qbits + fbits, 1, 0.8);
     filter->auto_resize(auto_resize);
 
     // String for buffering results

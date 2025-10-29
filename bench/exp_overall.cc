@@ -9,8 +9,8 @@
 #include "util.hpp"
 #include "base.hpp"
 
-#include "izf_template.hpp"
-#include "vzf_template.hpp"
+#include "zenofilter_template.hpp"
+#include "zenofiltervm_template.hpp"
 #include "ldcf_template.hpp"
 #include "aleph_template.hpp"
 #include "quotient_template.hpp"
@@ -103,18 +103,18 @@ int main(int argc, char** argv) {
     // Configure filter by given ID
     zeno_bench::Filter* filter;
     if (id == 1) {
-        filter = new zeno_bench::IZF(qbits, qbits + fbits, 1);
+        filter = new zeno_bench::ZenoFilter(qbits, qbits + fbits, 1);
         filter->auto_resize(false);
         auto_resize = false;
     }
     else if (id == 2) {
-        filter = new zeno_bench::IZF(qbits, qbits + fbits, 2);
+        filter = new zeno_bench::ZenoFilter(qbits, qbits + fbits, 2);
         filter->auto_resize(false);
         auto_resize = false;
         verbose = true;
     }
     else if (id == 3) {
-        filter = new zeno_bench::VZF(qbits, qbits + fbits, 1);
+        filter = new zeno_bench::ZenoFilterVM(qbits, qbits + fbits, 1);
         filter->auto_resize(false);
         auto_resize = false;
     }

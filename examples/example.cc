@@ -1,7 +1,7 @@
 #include <iostream>
 #include <openssl/rand.h>
 
-#include "vzf.hpp"
+#include "zenofiltervm.hpp"
 
 using namespace zeno;
 
@@ -20,7 +20,7 @@ int main(int argc, char **argv) {
     uint64_t key_count = 1;
     uint64_t *vals;
 
-    VZF* zeno = new VZF(qbits, qbits + rbits, 0, coeff, hashmode::Default, 0);
+    ZenoFilterVM* zeno = new ZenoFilterVM(qbits, qbits + rbits, 0, coeff, hashmode::Default, 0);
     zeno->set_auto_resize(true);
 
     vals = (uint64_t*)malloc(nvals * sizeof(vals[0]));

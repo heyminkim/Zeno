@@ -10,11 +10,11 @@
 #include "util.hpp"
 #include "base.hpp"
 
-#include "vzf_template.hpp"
+#include "zenofiltervm_template.hpp"
 
 #include "../util/cxxopts.hpp"
 
-void insert_keys(zeno_bench::VZF* filter, const uint64_t* keys, uint64_t num_keys) {
+void insert_keys(zeno_bench::ZenoFilterVM* filter, const uint64_t* keys, uint64_t num_keys) {
     for (uint64_t i = 0; i < num_keys; ++i) {
         filter->concurrent_insert(keys[i]);
     }
@@ -82,7 +82,7 @@ int main(int argc, char** argv) {
     
     // Configure filter
     double exp_threshold = ((double)threshold) * 0.1;
-    zeno_bench::VZF* filter = new zeno_bench::VZF(qbits, qbits + fbits, 1, exp_threshold);
+    zeno_bench::ZenoFilterVM* filter = new zeno_bench::ZenoFilterVM(qbits, qbits + fbits, 1, exp_threshold);
     filter->auto_resize(auto_resize);
 
     file_insert << filter->name(false) << "con" << threshold << ",";

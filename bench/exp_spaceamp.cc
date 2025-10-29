@@ -9,7 +9,7 @@
 #include "util.hpp"
 #include "base.hpp"
 
-#include "izf_template.hpp"
+#include "zenofilter_template.hpp"
 
 #include "../util/cxxopts.hpp"
 
@@ -52,7 +52,7 @@ int main(int argc, char** argv) {
     bool auto_resize = false;
     
     // Configure filter by given ID
-    zeno_bench::IZF* filter = new zeno_bench::IZF(qbits, qbits + fbits, rratio);
+    zeno_bench::ZenoFilter* filter = new zeno_bench::ZenoFilter(qbits, qbits + fbits, rratio);
     filter->auto_resize(auto_resize);
     util::set_cpu_affinity(12);
 

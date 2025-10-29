@@ -1,22 +1,22 @@
 #pragma once
 
 #include "base.hpp"
-#include "vzf.hpp"
+#include "zenofiltervm.hpp"
 
 #include <numeric>
 
 namespace zeno_bench {
 
-class VZF : public Filter {
+class ZenoFilterVM : public Filter {
     public:
-    VZF(uint64_t exp_size, uint64_t hash_bits, uint64_t expansion_ratio=1, double threshold=0.9) 
+    ZenoFilterVM(uint64_t exp_size, uint64_t hash_bits, uint64_t expansion_ratio=1, double threshold=0.9) 
     : valid(true) {
         expansion_ratio_ = expansion_ratio;
-        filter = new zeno::VZF(exp_size, hash_bits, 0, expansion_ratio, zeno::hashmode::Default, 0,
+        filter = new zeno::ZenoFilterVM(exp_size, hash_bits, 0, expansion_ratio, zeno::hashmode::Default, 0,
                                threshold);
     }
 
-    ~VZF() {
+    ~ZenoFilterVM() {
         delete filter;
     }
 
@@ -83,9 +83,9 @@ class VZF : public Filter {
     }
 
     private:
-    zeno::VZF* filter;
+    zeno::ZenoFilterVM* filter;
     uint64_t expansion_ratio_;
     bool valid;
-};  // class VZF
+};  // class ZenoFilterVM
 
 }   // namespace zeno_bench
