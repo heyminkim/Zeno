@@ -8,18 +8,49 @@ Overall, it supports indefinite expansion, constant-time access across expansion
 ## Variants
 
 Zeno filter introduces two implementations, each taking a different approach to in-place expansion. 
-**IZF** refers to the implementation that utilizes a layer of indirection. 
-**VZF** refers to the implementation that leverages virtual memory. 
-In the paper, this variant is referred to as Zeno filter-VM. 
+**ZenoFilter** refers to the default implementation that utilizes the singly resizable array as the layer of indirection. 
+**ZenoFilterVM** refers to the implementation that leverages virtual memory. 
+
+The source code of each variant can be found under `include/`. 
 
 
 ## APIs
+
+### Initial Configurations
+
+Zeno filter takes the following parameters for initialization:
+
+```c++
+ZenoFilter(uint64_t exp_size, uint64_t fp_bits, uint64_t value_bits, 
+           uint64_t expansion_coefficient, hashmode hash_mode, uint32_t seed, double threshold);
+```
+
+- `exp_size`: The hash length in bits. Includes both the length of the quotient and length of the fingerprint. Corresponds to $q + f$ from the paper. 
+- `fp_bits`: The fingerprint length in bits. Corresponds to $f$ from the paper. 
+- `value_bits`: Zeno filter supports payloads. `value_bits` specifies the payload length in bits. 
+- `expansion_coefficient`: The expansion coefficient for Stretching. Corresponds to $r$ from the paper. 
+- `hash_mode`: Zeno filter supports two hash modes. 
+    - `zeno::hashmode::Default`: the key is not hashed - Zeno filter uses a hash function to hash the key. 
+    - `zeno::hashmode::None`: the key is hashed - Zeno filter will not hash the key.
+    - More details can be found in `include/decls.hpp`. 
+- `seed`: The seed for the hash function. 
+- `threshold`: The expansion threshold for exansion. Corresponds to $\alpha$ from the paper. 
+
+The following example code initializes Zeno filter with $2^{12}$ slots, use $8$-bit fingerprints, $r=1$, and expands when 90% full. 
+
+```c++
+using namespace zeno;
+ZenoFilter* filter = ZenoFilter(20 /*12+8*/, 8, 0 /*no payload*/, 1, hashmode::Default, 0, 0.9);
+```
+
+
+### Filter Operations
 
 The core API provides standard filter operations: 
 
 - `insert(uint64_t key, uint64_t value, uint64_t count, uint8_t flags)`: Increments the counter for this key/value pair by `count`. 
 - `int32_t remove(uint64_t key, uint64_t value, uint64_t count, uint8_t flags)`: Removes up to `count` instances of this key/value combination. 
-- `uint64_t query(uint64_t key, uint64_t& value, uint8_t flags)`: Looks up the value associated with key. Returns the count of that key/value pair in the filter.
+- `uint64_t query(uint64_t key, uint64_t& value, uint8_t flags)`: Looks up the value associated with the key. Returns the count of that key/value pair in the filter.
 
 For a more detailed description of the APIs, please refer to the source code in `include/izf.hpp` and `include/vzf.hpp`. 
 
@@ -67,7 +98,7 @@ For example, this command:
 ./example 12 8 1
 ```
 
-will initialize Zeno filter with $`2^{12}`$ slots with 8-bit fingerprints, and a growth coefficient of 1. 
+will initialize Zeno filter with $2^{12}$ slots with 8-bit fingerprints, and a growth coefficient of 1. 
 
 
 ### Running the Experiments
@@ -99,8 +130,7 @@ The generated PDFs will appear in the `results/` directory, with filenames match
 ### Baselines
 
 InfiniFilter and Aleph filter are implemented under `include/`. 
-The [Logarithmic Dynamic Cuckoo Filter](https://github.com/DavIvek/BioInf1) and [Bamboo filter](https://github.com/wanghanchengchn/bamboofilters) are cloned from the respective repositories, and were modified slightly for evaluations. 
-No modifications were made that harm the performance of the filters. 
+The [Logarithmic Dynamic Cuckoo Filter](https://github.com/DavIvek/BioInf1) and [Bamboo filter](https://github.com/wanghanchengchn/bamboofilters) are cloned from the respective repositories, and include changes for bug fixes. 
 The code for the two baselines are under `bench/include/`. 
 
 The file `bench/base.hpp` provides a unified interface for all filter implementation used in benchmarking.
