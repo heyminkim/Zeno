@@ -81,9 +81,6 @@ int main(int argc, char** argv) {
             done += this_chunk;
         }
     }
-    // util::dump_vals("keys.data", keys, nvals);
-    // keys = util::read_vals("keys.data", nvals);
-
 
     bool auto_resize = false;
     

@@ -2,11 +2,12 @@
 
 # Experiment 2
 # Evaulation of Zeno under in-place expansion. Evaluates (1) filter size, (2) insert latency,
-# (3) query latency, and (4) fpr. 
+# (3) query latency, and (4) fpr. Compares Zeno filter / Zeno filter-VM, Aleph filter, and 
+# Aleph filter (10-bits). 
 
 EXE=exp_inplace_expansion
 RUN=bench/${EXE}
-FILE=exp2
+FILE=exp2_inplace_expansion
 
 mkdir -p results
 
@@ -20,7 +21,7 @@ cd build || exit
 QBITS=8
 FPLEN=16
 NEXP=20
-NREP=1
+NREP=10
 
 STR_SIZE="ie_size"
 STR_QUERY="ie_query"
@@ -60,17 +61,26 @@ progress_bar()
 }
 
 # ID | Description
-for ID in 1 2 3; do
+for ID in 1 2 3 4; do
     cmake .. -DCMAKE_BUILD_TYPE=Release
     make ${EXE} -j 8
 
     if [ "$ID" -eq 1 ]; then
         LABEL="IZFie1"
+        PRINTLABEL="Zeno Filter"
     elif [ "$ID" -eq 2 ]; then
         LABEL="VZFie1"
+        PRINTLABEL="Zeno Filter-VM"
     elif [ "$ID" -eq 3 ]; then
         LABEL="Alephie16"
+        PRINTLABEL="Aleph Filter"
+    elif [ "$ID" -eq 4 ]; then
+        LABEL="Alephie10"
+        PRINTLABEL="Aleph Filter (f=10)"
+        FPLEN=10
     fi
+
+    echo "Evaluating ${PRINTLABEL}"
 
     # Initial run to measure filter size
     ${RUN} -q ${QBITS} -f ${FPLEN} -e ${NEXP} -i ${ID} -l ${LABEL} &
@@ -101,4 +111,4 @@ done
 cd ..
 
 echo "Plotting..."
-python3 plot.py -s ${FILE} --letter 0 --legend_column 1 --filenames ${STR_SIZE} ${STR_INSERT} ${STR_QUERY} ${STR_FPR}
+python3 plot.py -s ${FILE} --legend_column 1 --filenames ${STR_SIZE} ${STR_INSERT} ${STR_QUERY} ${STR_FPR}

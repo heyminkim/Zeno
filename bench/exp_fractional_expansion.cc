@@ -77,7 +77,7 @@ int main(int argc, char** argv) {
 
     // Dummy keys for testing false positive rates
     uint64_t* queries;
-    uint64_t num_queries = 100'000;
+    uint64_t num_queries = 1'000'000;
     queries = (uint64_t*)malloc(num_queries * sizeof(queries[0]));
     RAND_bytes((unsigned char*)queries, sizeof(*queries) * num_queries);
 

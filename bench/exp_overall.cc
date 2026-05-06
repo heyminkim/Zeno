@@ -72,7 +72,7 @@ int main(int argc, char** argv) {
     for (uint64_t i = 0; i < expansions; ++i) {
         nvals *= 2;
     }
-    nvals = 70 * nvals / 100;
+    nvals = 80 * nvals / 100;
 
     // Generate keys for insertion
     uint64_t* keys = nullptr;
@@ -95,7 +95,7 @@ int main(int argc, char** argv) {
         }
     }
     uint64_t* queries = nullptr;
-    uint64_t num_queries = 100'000;
+    uint64_t num_queries = 10'000'000;
 
     bool auto_resize = false;
     bool verbose = false;
@@ -126,7 +126,7 @@ int main(int argc, char** argv) {
     else if (id == 5) {
         filter = new zeno_bench::InfiniFilter(qbits, qbits + fbits);
         filter->auto_resize(false);
-        auto_resize = true;
+        auto_resize = false;
     }
     else if (id == 6) {
         filter = new zeno_bench::Bamboo(qbits);
@@ -164,7 +164,7 @@ int main(int argc, char** argv) {
 
     // Execute evaluation
     for (uint64_t i = 0; i < nvals; ++i) {
-        uint64_t key = record_pquery ? keys[i] : util::generate_random();
+        uint64_t key = record_pquery ? keys[i] : util::generate_random_fast();
         // Calculate insert time
         insert_time += util::timing([&]{
             ret = filter->insert(key);
@@ -179,7 +179,7 @@ int main(int argc, char** argv) {
             // Record negative query
             if (record_nquery) {
                 for (uint64_t j = 0; j < num_queries; ++j) {
-                    uint64_t random_query = util::generate_random();
+                    uint64_t random_query = util::generate_random_fast();
                     query_time += util::timing([&]{
                         ret = filter->query(random_query);
                     });
@@ -198,6 +198,9 @@ int main(int argc, char** argv) {
             }
 
             uint64_t next_po2 = sampling_done ? 1ULL << (64 - __builtin_clzll(i)) : sample_interval;
+            
+            // Hard coded break for Zeno with r=2
+            if (next_po2 == 536870912) break;
 
             double interval = (double)(i - prev_interval);
 
@@ -227,6 +230,7 @@ int main(int argc, char** argv) {
             sample_interval <<= 1;
 
             if (!filter->is_valid()) break;
+            if (insert_failed && id == 6) break;
         }
     }
 

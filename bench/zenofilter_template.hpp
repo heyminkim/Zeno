@@ -10,8 +10,8 @@ class ZenoFilter : public Filter {
     ZenoFilter(uint64_t exp_size, uint64_t hash_bits, uint64_t expansion_ratio=1, double threshold=0.9)
     : valid(true) {
         expansion_ratio_ = expansion_ratio;
-        filter = new zeno::ZenoFilter(exp_size, hash_bits, 0, expansion_ratio, 
-                                      zeno::hashmode::Default, 0, threshold);
+        filter = new zeno::ZenoFilter(exp_size, hash_bits, 0, expansion_ratio, zeno::hashmode::Default, 0,
+                               threshold);
     }
 
     ~ZenoFilter() {
@@ -48,6 +48,13 @@ class ZenoFilter : public Filter {
 
     uint64_t size() const {
         return filter->get_memory_usage();
+    }
+
+    uint64_t directory_size() const {
+        // number of slots in the directory
+        uint64_t directory_size = filter->get_index_block_size();
+        // size of directory in bytes
+        return directory_size * 8;
     }
 
     double space_amplification() const {

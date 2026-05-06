@@ -1,3 +1,16 @@
+/*
+ * This file is a rewritten header-only C++ version of the original C-based
+ * project by Rob Johnson and Prahsant Pandey, licensed under the BSD 3-Clause 
+ * License.
+ *
+ * Original Copyright (c) 2017, Rob Johnson and Prahsant Pandey
+ * Copyright (c) 2025, Hyuhng Min Kim
+ * All rights reserved.
+ *
+ * This software is distributed under the BSD 3-Clause License.
+ * See LICENSE file for details.
+ */
+
 #pragma once
 
 #include <algorithm>
@@ -37,9 +50,8 @@ namespace zeno {
 
 class ZenoFilter {
     public:
-    explicit ZenoFilter(uint64_t exp_size, uint64_t fp_bits, uint64_t value_bits, 
-                        uint64_t expansion_coefficient, hashmode hash_mode, uint32_t seed, 
-                        double threshold);
+    explicit ZenoFilter(uint64_t exp_size, uint64_t hash_bits, uint64_t value_bits, 
+                 uint64_t reciprocal_ratio, hashmode hash_mode, uint32_t seed, double threshold);
     ~ZenoFilter();
     ZenoFilter(const ZenoFilter& zeno) = delete;
     ZenoFilter& operator=(const ZenoFilter& zeno) = delete;
@@ -82,10 +94,6 @@ class ZenoFilter {
     int32_t remove(uint64_t key, uint64_t value, uint64_t count, uint8_t flags);
 
     /**
-     * Increases the capacity of the underlying memory. 
-     */
-
-    /**
      * Increases the capacity of the underlying memory. The parameters are for a potential 
      * 'dangling' hash; the hash that caused expansion will not have been inserted to the larger 
      * filter. This function handles that case. 
@@ -126,6 +134,15 @@ class ZenoFilter {
      */
     uint64_t query(uint64_t key, uint64_t& value, uint8_t flags);
 
+    /**
+     * Lookup the value associated with key. Returns the count of that key/value pair in Zeno.
+     * @param key The query key. 
+     * @param value Holder for the associated value. 
+     * @param flags Flags determining the filter's behavior under concurrency, as well as if the 
+     * prefix is already hashed or not.
+     */
+    uint64_t concurrent_query(uint64_t key, uint64_t& value, uint8_t flags);
+
     // Hashing info
     hashmode get_hashmode() const {
         return metadata_->hash_mode;
@@ -136,7 +153,7 @@ class ZenoFilter {
     __uint128_t get_hash_range() const {
         return metadata_->range;
     }
-    uint64_t get_fp_bits() const {
+    uint64_t get_hash_bits() const {
         return metadata_->hash_bits;
     }
     uint64_t get_memory_usage() const {
@@ -144,6 +161,9 @@ class ZenoFilter {
     }
     double get_space_amplification() const {
         return metadata_->space_amplification_;
+    }
+    void get_max_locked_region() const {
+        std::cerr << "max locked region " << runtimedata_->max_locked_region << std::endl;
     }
     uint64_t get_num_slots() const {
         return metadata_->nslots;
@@ -169,13 +189,17 @@ class ZenoFilter {
     void print_by_index(uint64_t index) const {
         print_from_index(index);
     }
-    
+
+    /**
+     * Calculates the number of non-empty slots.
+     */
     uint64_t calculate_nonempty_slots() const {
         uint64_t running_cluster_length = 0;
         uint64_t current_runend_index = 0;
         uint64_t current_index = 0;
 
         uint64_t nonempty_slot = 0;
+
         while (true) {
             if (current_index > metadata_->nslots) break;
             if (!is_occupied(current_index)) {
@@ -197,6 +221,111 @@ class ZenoFilter {
             running_cluster_length = 0;
         }
         return nonempty_slot;
+    }
+
+    void breakpoint() const {
+        return;
+    }
+
+    /**
+     * Reads all cluster lengths of the filter and inserts them to the result vector. 
+     * @param result The vector that stores the resulting cluster sizes. 
+     * @returns Nothing. 
+     */
+    void calculate_cluster(std::vector<uint64_t>& result) const {
+        uint64_t running_cluster_length = 0;
+        uint64_t current_runend_index = 0;
+        uint64_t current_index = 0;
+        while (true) {
+            if (current_index > metadata_->nslots) break;
+            if (!is_occupied(current_index)) {
+                ++current_index;
+                continue;
+            }
+            current_runend_index = run_end(current_index);
+            running_cluster_length += current_runend_index - current_index + 1;
+            for (uint64_t i = current_index + 1; i <= current_runend_index; ++i) {
+                if (!is_occupied(i)) continue;
+                else {
+                    uint64_t new_runend_index = run_end(i);
+                    running_cluster_length += new_runend_index - current_runend_index;
+                    current_runend_index = new_runend_index;
+                }
+            }
+            current_index = current_runend_index + 1;
+            result.push_back(running_cluster_length);
+            running_cluster_length = 0;
+        }
+    }
+
+    void calculate_runend_diff() {
+        uint64_t current_index = 0;
+        while (true) {
+            if (current_index > metadata_->nslots) break;
+            if (!is_occupied(current_index)) {
+                ++current_index;
+                continue;
+            }
+            uint64_t runend_true = run_end(current_index);
+            uint64_t runend_false;
+            int64_t current_region = current_index / kNumSlotsToLock;
+            int64_t last_region;
+            uint64_t clusterend_index;
+            int res = cluster_end_threadsafe(current_index, runend_false, last_region, clusterend_index, kWaitForLock);
+            
+            if (runend_true != runend_false) {
+                std::cout << "index : " << current_index << std::endl;
+                std::cout << "runendt " << runend_true << std::endl;
+                std::cout << "runendf " << runend_false << std::endl;
+                print_by_index(current_index);
+                print_lock_status();
+                abort();
+            }
+
+            for (uint64_t i = current_region; i <= last_region; ++i) zeno_unlock_region(i);
+
+            // print_lock_status();
+            for (uint64_t i = 0; i < runtimedata_->num_locks; ++i) {
+                // zeno_unlock_region(i);
+                if (is_region_locked(i)) {
+                    std::cout << "locked region : " << i << std::endl;
+                    abort();
+                }
+            }
+            ++current_index;
+        }
+    }
+
+    /**
+     * Reads all cluster lengths of the filter and inserts them to the result vector. Uses the 
+     * runend trick to make calculation faster. 
+     * @param result The vector that stores the resulting cluster sizes. 
+     * @returns Nothing. 
+     */
+    void calculate_cluster_runend(std::vector<uint64_t>& result) const {
+        uint64_t running_cluster_length = 0;
+        uint64_t current_runend_index = 0;
+        uint64_t current_index = 0; 
+        
+        while (true) {
+            if (current_index > metadata_->nslots) break;
+            if (!is_occupied(current_index)) {
+                ++current_index;
+                continue;
+            }
+            current_runend_index = run_end(current_index);
+            running_cluster_length += current_runend_index - current_index + 1;
+            
+            uint64_t new_runend_index = run_end(current_runend_index);
+            while (new_runend_index > current_runend_index) {
+                running_cluster_length += new_runend_index - current_runend_index;
+                current_runend_index = new_runend_index;
+                new_runend_index = run_end(current_runend_index);
+            }
+            current_index = current_runend_index + 1;
+            result.push_back(running_cluster_length);
+            running_cluster_length = 0;
+        }
     }
 
     private:
@@ -269,7 +398,7 @@ class ZenoFilter {
 
     // Log of QF blocks that will fit into a single unit of resizable array. Can be any integer >= 1
     // but currently 6 to fit 4096 slots QF into a single unit of RA for easier concurrency control. 
-    static constexpr uint32_t kUnitOffsetBits = 6;
+    static constexpr uint32_t kUnitOffsetBits = 0;
 
     // INCREMENTAL
     static constexpr uint64_t kNumSlotsToLock = 1ULL << 12;
@@ -353,9 +482,21 @@ class ZenoFilter {
         char padding[kCacheLineSize - sizeof(spinlock)];
     };  // struct spinlock_padded
 
+    /**
+     * The below struct is used to instrument the code.
+     * It is not used in normal operations of the filter.
+     */
+    struct WaitTimeData {
+        uint64_t total_time_single;
+        uint64_t total_time_spinning;
+        uint64_t locks_taken;
+        uint64_t locks_acquired_single_attempt;
+    };  // struct WaitTimeData
+
     struct qfruntime {
         uint64_t num_locks;
         spinlock_padded* locks;
+        WaitTimeData* wait_times;
         // Locks required for reallocating spinlocks
         std::atomic<bool> resize_pending{false};
         std::shared_mutex spinlock_mutex;
@@ -397,7 +538,7 @@ class ZenoFilter {
 #if defined(WIDENING)
         // total number of expansions this filter has gone through, used for calculating the number
         // of slots in the widening regime. 
-        uint64_t num_expansions;
+        // uint64_t num_expansions;
 #endif
         /**
          * MOD: metadata for resizable array
@@ -413,6 +554,15 @@ class ZenoFilter {
          * filter size becomes the next power of 2 regardless of the multiplicative result. 
          */
         double expansion_ratio_; 
+        /**
+         * The accumulated expansion ratio up to this epoch. This value returns to zero when a 
+         * period terminates. Used for multiplying the index to the correct index and also for 
+         * recalculating the original index on expansion.
+         * TODO: At the end of a period, if multiplying the index directly with `expansion_ratio_` 
+         * doesn't generate bugs (i.e., not being power of 2) this variable can be removed. 
+         * Otherwise, the index at an epoch should be divided by this value to get the original hash
+         * and multiplied by 2 to get the correct slot address. 
+         */
         /* Space amplification after each expansion */
         double space_amplification_;
         double multiplicative_ratio_;
@@ -420,6 +570,7 @@ class ZenoFilter {
          * The exponent of the size of a single slot of the datablock. Given an index, a lookup 
          * slices the lower `exp_db_size_` bits from the index for internal lookup. 
          */
+        // TODO: may not need this?
         uint64_t exp_db_size_; // = QF_BLOCK_OFFSET_BITS + EXP_NUM_QF_PER_UNIT
         /* Current epoch of expansion. Rolls back to 0 when it reaches the reciprocal ratio. */
         uint64_t current_epoch_;
@@ -459,6 +610,15 @@ class ZenoFilter {
 
     /* The index block that serves as a directory for data blocks. */
     std::vector<qfblock*> index_block_;
+
+    /**
+     * The below struct is used to instrument the code.
+     * It is not used in normal operations of Zeno filter.
+     */
+    struct ClusterData {
+        uint64_t start_index;
+        uint16_t length;
+    };  // struct ClusterData
 
     ////////////////////////////////////
     // Modification helper functions. //
@@ -640,6 +800,12 @@ class ZenoFilter {
         }
         return false;
     }
+
+    /**
+     * Tries to acquire a lock once and return even if the lock is busy. Used for normal operations 
+     * of the inserting thread. If spin flag is set, waits until the spinloc
+     * 
+     */
 
     /**
      * Unlock the acquired lock.
@@ -1201,11 +1367,38 @@ class ZenoFilter {
         std::cout << "---------------------------------" << std::endl;
         std::cout << std::endl;
     }
+
+    public:
+    /**
+     * Prints the current status of runtime locks. 
+     * @warning This method is not thread-safe. If this method is called while the lock is being
+     * resized, it will cause undefined behavior (most likely a segfault). 
+     */
+    void print_lock_status(bool verbose=false) const {
+        std::cout << "printing" << std::endl;
+        if (!verbose) {
+            for (uint64_t zz = 0; zz < runtimedata_->num_locks; ++zz) {
+                if (runtimedata_->locks[zz].lock_.lock_.load(std::memory_order_acquire)) {
+                    std::cout << zz << " :: locked" << std::endl;
+                }
+            }
+        } else {
+            for (uint64_t zz = 0; zz < runtimedata_->num_locks; ++zz) {
+                if (runtimedata_->locks[zz].lock_.lock_.load(std::memory_order_acquire)) {
+                    std::cout << zz << " :: locked" << std::endl;
+                } 
+                else {
+                    std::cout << zz << " :: unlocked" << std::endl;
+                }
+            }
+        }
+        std::cout << "printing finished" << std::endl;
+    }
+
 };  // class ZenoFilter
 
-ZenoFilter::ZenoFilter(uint64_t exp_size, uint64_t fp_bits, uint64_t value_bits, 
-                       uint64_t expansion_coefficient, hashmode hash_mode, uint32_t seed, 
-                       double threshold = 0.8) {
+ZenoFilter::ZenoFilter(uint64_t exp_size, uint64_t hash_bits, uint64_t value_bits, 
+           uint64_t reciprocal_ratio, hashmode hash_mode, uint32_t seed, double threshold = 0.8) {
     uint64_t num_slots, xnslots, nblocks;
     uint64_t fingerprint_bits, bits_per_slot;
     uint64_t buffer_size = 0;
@@ -1215,7 +1408,7 @@ ZenoFilter::ZenoFilter(uint64_t exp_size, uint64_t fp_bits, uint64_t value_bits,
     num_slots = 1ULL << exp_size;
     xnslots = num_slots + 10*sqrt((double)num_slots);
     nblocks = (xnslots + kSlotsPerBlock - 1) / kSlotsPerBlock;
-    fingerprint_bits = fp_bits;
+    fingerprint_bits = hash_bits;
     while (num_slots > 1 && fingerprint_bits > 0) {
         fingerprint_bits--;
         num_slots >>= 1;
@@ -1235,14 +1428,14 @@ ZenoFilter::ZenoFilter(uint64_t exp_size, uint64_t fp_bits, uint64_t value_bits,
     metadata_->total_memory_usage = total_num_bytes;
 
     metadata_->magic_endian_number = kMagicNumber;
-    metadata_->auto_resize = 1;
+    metadata_->auto_resize = 0;
     metadata_->hash_mode = hash_mode;
     metadata_->reserved = 0;
     metadata_->total_size_in_bytes = buffer_size;
     metadata_->seed = seed;
     metadata_->nslots = 1ULL << exp_size;
     metadata_->xnslots = xnslots;
-    metadata_->hash_bits = fp_bits;
+    metadata_->hash_bits = hash_bits;
     metadata_->value_bits = value_bits;
     metadata_->fingerprint_bits = fingerprint_bits;
     metadata_->quotient_bits = exp_size;
@@ -1262,8 +1455,8 @@ ZenoFilter::ZenoFilter(uint64_t exp_size, uint64_t fp_bits, uint64_t value_bits,
 #endif
 
     metadata_->exp_db_size_ = kBlockOffsetBits + kUnitOffsetBits;   // = 12
-    metadata_->reciprocal_ratio_ = expansion_coefficient;
-    metadata_->expansion_ratio_ = pow(2., 1./(double)(expansion_coefficient));
+    metadata_->reciprocal_ratio_ = reciprocal_ratio;
+    metadata_->expansion_ratio_ = pow(2., 1./(double)(reciprocal_ratio));
     metadata_->multiplicative_ratio_ = 1.0;
     metadata_->exp_ra_size_ = exp_size - metadata_->exp_db_size_;
     metadata_->current_size_ = (double)(1ULL << metadata_->exp_ra_size_);
@@ -1311,6 +1504,10 @@ ZenoFilter::ZenoFilter(uint64_t exp_size, uint64_t fp_bits, uint64_t value_bits,
     size_t lock_bytes = runtimedata_->num_locks * sizeof(spinlock_padded);
     runtimedata_->locks = (spinlock_padded*)malloc(lock_bytes);
     if (runtimedata_->locks) memset(runtimedata_->locks, 0, lock_bytes);
+#ifdef LOG_WAIT_TIME
+    runtimedata_->wait_times = reinterpret_cast<WaitTimeData *>
+                               (new WaitTimeData[runtimedata->num_locks + 1]{});
+#endif
 }
 
 inline ZenoFilter::~ZenoFilter() {
@@ -1502,6 +1699,7 @@ int64_t ZenoFilter::grow(uint64_t dangling_hash, uint64_t dangling_count, uint8_
         next_nslots = calculateNextPowerOf2(next_nslots);
         metadata_->current_epoch_ = 0;
         period_terminates = true;
+        // TODO: is this necessary?
         metadata_->exp_ra_size_ += 1;
     } else {
         multiply_by = divide_by * metadata_->expansion_ratio_;
@@ -2353,8 +2551,8 @@ int64_t ZenoFilter::grow(uint64_t dangling_hash, uint64_t dangling_count, uint8_
 int64_t ZenoFilter::contract() {
     uint64_t new_qbits = metadata_->quotient_bits - 1ULL;
     ZenoFilter new_filter(new_qbits, metadata_->hash_bits - 1ULL, metadata_->value_bits, 
-                          metadata_->reciprocal_ratio_, metadata_->hash_mode, metadata_->seed,
-                          metadata_->expansion_threshold);
+                   metadata_->reciprocal_ratio_, metadata_->hash_mode, metadata_->seed,
+                   metadata_->expansion_threshold);
     new_filter.set_auto_resize(metadata_->auto_resize);
 
     // Temporary vector to store zero indexed values to avoid re-inserting
@@ -2718,6 +2916,33 @@ uint64_t ZenoFilter::query(uint64_t key, uint64_t& value, uint8_t flags) {
     }
 
     return 0;
+}
+
+uint64_t ZenoFilter::concurrent_query(uint64_t key, uint64_t& value, uint8_t flags) {
+    uint64_t original_key;
+    if (GET_KEY_HASH(flags) != kKeyIsHash) {
+        if (metadata_->hash_mode == hashmode::Default) {
+            // Use the upper `hash_bit` bits of the hashed result
+            original_key = MurmurHash64A((void*)&key, sizeof(key), metadata_->seed);
+            key = (original_key >> (64ULL - metadata_->hash_bits));
+        }
+        else if (metadata_->hash_mode == hashmode::Invertible)
+            key = hash_64(key, BITMASK(metadata_->hash_bits));
+        if (!metadata_->is_period_) sanitize_hash(key);
+    }
+    uint64_t count = query(key, value, kWaitForLock | kKeyIsHash);
+    if (flags & kWaitForLock) {
+        if (count == 0 && runtimedata_->resizing_region.load(std::memory_order_acquire) >= 0) {
+            // query again
+            key = original_key >> (64ULL - metadata_->hash_bits - 1);
+            // count = query(key, value, kWaitForLock | kKeyIsHash | kSecondTryLock);
+            return count;
+        } else {
+            return count;
+        }
+    } else {
+        return count;
+    }
 }
 
 inline
@@ -3463,7 +3688,7 @@ int ZenoFilter::insert_B_internal(uint64_t& hash_index, uint64_t& runstart_index
 
 inline
 int ZenoFilter::remove_longest_internal(uint64_t hash, uint64_t &count, 
-                                        uint8_t runtime_lock) {
+                                  uint8_t runtime_lock) {
     int ret_numfreedslots = 0;
     uint64_t hash_remainder = hash & BITMASK(metadata_->bits_per_slot);
     uint64_t hash_bucket_index = hash >> metadata_->bits_per_slot;
@@ -3787,7 +4012,9 @@ const ZenoFilter::indexABC ZenoFilter::entry_lookup_internal(const uint64_t& ind
     );
 }
 
-inline bool ZenoFilter::zeno_lock(uint64_t hash_bucket_index, bool small, uint8_t runtime_lock) {
+inline bool ZenoFilter::zeno_lock(uint64_t hash_bucket_index, 
+                            bool small, 
+                            uint8_t runtime_lock) {
     uint64_t hash_bucket_lock_offset  = hash_bucket_index % kNumSlotsToLock;
     // Read-lock the spinlock array. This blocks the expansion thread from modifying the spinlock
     // array when threads may be spinning on it. 
@@ -4155,9 +4382,9 @@ inline int64_t ZenoFilter::cluster_end(const uint64_t hash_bucket_index, const u
     return new_runend_index / kNumSlotsToLock;
 }
 
-inline int ZenoFilter::cluster_end_threadsafe(const uint64_t& hash_bucket_index, 
-                                              uint64_t& runend_index, int64_t& clusterend_region, 
-                                              uint64_t& clusterend_index, uint8_t flags) { 
+inline int ZenoFilter::cluster_end_threadsafe(const uint64_t& hash_bucket_index, uint64_t& runend_index, 
+                                        int64_t& clusterend_region, uint64_t& clusterend_index, 
+                                        uint8_t flags) { 
     // Acquire the runend index of the given hash_bucket_index. 
     int res = run_end_threadsafe(hash_bucket_index, runend_index, clusterend_region, flags);
     if (res == kErrCouldntLock) return res;
@@ -4179,7 +4406,7 @@ inline int ZenoFilter::cluster_end_threadsafe(const uint64_t& hash_bucket_index,
 }
 
 inline int ZenoFilter::zeno_lock_cluster(uint64_t index, uint64_t& runend, int64_t& clusterend_region, 
-                                         uint8_t flags) {
+                                   uint8_t flags) {
     uint64_t clusterend = 0;
     uint64_t start_region = clusterend_region;
     
@@ -4327,11 +4554,11 @@ inline void ZenoFilter::shift_runends(int64_t first, uint64_t last, uint64_t dis
 
 inline
 bool ZenoFilter::shift_for_inserts(int operation, 
-                                   uint64_t slot_index, 
-                                   uint64_t overwrite_index,
-                                   const uint64_t* remainders, 
-                                   uint64_t total_remainders, 
-                                   uint64_t noverwrites) {
+                           uint64_t slot_index, 
+                           uint64_t overwrite_index,
+                           const uint64_t* remainders, 
+                           uint64_t total_remainders, 
+                           uint64_t noverwrites) {
     uint64_t empties[67] = {0,};
     uint64_t i;
     int64_t j;
@@ -4403,11 +4630,11 @@ bool ZenoFilter::shift_for_inserts(int operation,
 
 inline
 int ZenoFilter::shift_for_deletes(int operation, 
-                                  uint64_t bucket_index, 
-                                  uint64_t overwrite_index,
-                                  const uint64_t* remainders, 
-                                  uint64_t total_remainders, 
-                                  uint64_t old_length) {
+                           uint64_t bucket_index, 
+                           uint64_t overwrite_index,
+                           const uint64_t* remainders, 
+                           uint64_t total_remainders, 
+                           uint64_t old_length) {
     uint64_t i;
 
     // Update the slots

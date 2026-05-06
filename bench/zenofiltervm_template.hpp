@@ -1,7 +1,12 @@
 #pragma once
 
 #include "base.hpp"
+
+#if defined(FASTRESIZE)
+#include "zenofiltervm_con.hpp"
+#else
 #include "zenofiltervm.hpp"
+#endif
 
 #include <numeric>
 
@@ -49,7 +54,13 @@ class ZenoFilterVM : public Filter {
 
     bool concurrent_query(const uint64_t key) const {
         uint64_t value;
-        return filter->concurrent_query(key, value, zeno::kWaitForLock) >= 1;
+        // return filter->concurrent_query(key, value, zeno::kWaitForLock) >= 1;
+        return filter->query(key, value, zeno::kWaitForLock) >= 1;
+    }
+
+    uint64_t report_time() const {
+        // return filter->get_expansion_time();
+        return 0;
     }
 
     bool remove(const uint64_t key) {

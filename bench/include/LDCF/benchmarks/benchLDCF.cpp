@@ -82,7 +82,7 @@ int main(int argc, char* argv[]) {
     }
 
     // init LogarithmicDynamicCuckooFilter
-    baseline_LDCF::LogarithmicDynamicCuckooFilter ldcf(false_positive_rate, all_sequences.size(), expected_levels);
+    LogarithmicDynamicCuckooFilter ldcf(false_positive_rate, all_sequences.size(), expected_levels);
 
     // time clock
     auto start = std::chrono::high_resolution_clock::now();

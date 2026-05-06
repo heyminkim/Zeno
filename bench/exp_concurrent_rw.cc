@@ -12,12 +12,58 @@
 #include "base.hpp"
 
 #include "zenofiltervm_template.hpp"
+#include "quotient_template.hpp"
 
 #include "../util/cxxopts.hpp"
 
 std::atomic<bool> stop_flag{false};
 
-void insert_keys(zeno_bench::ZenoFilterVM* filter, const uint64_t* keys_start, uint64_t num_keys, 
+class ConcurrentFilter {
+    public:
+    virtual void concurrent_insert(uint64_t) = 0;
+    virtual bool concurrent_query(uint64_t) = 0;
+    virtual std::string name(bool) const = 0;
+    virtual ~ConcurrentFilter() = default;
+};
+
+class ZenoFilterVMAdapter : public ConcurrentFilter {
+    public:
+    zeno_bench::ZenoFilterVM* f;
+    explicit ZenoFilterVMAdapter(zeno_bench::ZenoFilterVM* f) : f(f) {}
+
+    void concurrent_insert(uint64_t k) override {
+        f->concurrent_insert(k);
+    }
+
+    bool concurrent_query(uint64_t k) override {
+        return f->concurrent_query(k);
+    }
+
+    std::string name(bool b) const override {
+        return f->name(b);
+    }
+};
+
+class RSQFAdapter : public ConcurrentFilter {
+    public:
+    zeno_bench::Quotient* f;
+    explicit RSQFAdapter(zeno_bench::Quotient* f) : f(f) {}
+
+    void concurrent_insert(uint64_t k) override {
+        f->concurrent_insert(k);
+    }
+
+    bool concurrent_query(uint64_t k) override {
+        return f->concurrent_query(k);
+    }
+
+    std::string name(bool b) const override {
+        return f->name(b);
+    }
+};
+
+template <typename T>
+void insert_keys(T filter, const uint64_t* keys_start, uint64_t num_keys, 
                  uint64_t interval, std::vector<uint64_t>& result, 
                  std::chrono::_V2::steady_clock::time_point start_time) {
     using clock = std::chrono::steady_clock;
@@ -35,7 +81,8 @@ void insert_keys(zeno_bench::ZenoFilterVM* filter, const uint64_t* keys_start, u
     }
 }
 
-void query_keys(zeno_bench::ZenoFilterVM* filter, const uint64_t* keys_start, uint64_t num_keys, 
+template <typename T>
+void query_keys(T filter, const uint64_t* keys_start, uint64_t num_keys, 
                  uint64_t interval, std::vector<uint64_t>& result, 
                  std::chrono::_V2::steady_clock::time_point start_time) {
     using clock = std::chrono::steady_clock;
@@ -117,8 +164,10 @@ int main(int argc, char** argv) {
       ("q,quotient", "Length of quotient in bits", cxxopts::value<uint64_t>()->default_value("12"))
       ("f,fingerprint", "Length of fingerprint in bits", cxxopts::value<uint64_t>()->default_value("12"))
       ("e,expansion", "Number of expected expansions", cxxopts::value<uint64_t>()->default_value("1"))
+      ("i,id", "Filter id", cxxopts::value<uint64_t>()->default_value("1"))
       ("t,threads", "Number of threads", cxxopts::value<uint64_t>()->default_value("1"))
       ("fn_insert", "File name to write insert thpt results to", cxxopts::value<std::string>()->default_value("/dev/null"))
+      ("fn_query", "File name to write query thpt results to", cxxopts::value<std::string>()->default_value("/dev/null"))
     ;
 
     auto result = options.parse(argc, argv);
@@ -128,19 +177,19 @@ int main(int argc, char** argv) {
     uint64_t fbits = result["fingerprint"].as<uint64_t>();
     uint64_t expansions = result["expansion"].as<uint64_t>();
     uint64_t nthreads = result["threads"].as<uint64_t>();
+    uint64_t id = result["id"].as<uint64_t>();
 
     // Files to write results
     std::string fn_insert = result["fn_insert"].as<std::string>();
+    std::string fn_query = result["fn_query"].as<std::string>();
 
     std::ofstream file_insert(fn_insert, std::ios::app);
+    std::ofstream file_query(fn_query, std::ios::app);
 
-    if (!file_insert) {
+    if (!file_insert || !file_query) {
         std::cerr << "Error opening file." << std::endl;
         return 1;
     }
-
-    // Parameters for benchmark
-    bool record_insert = (fn_insert != "/dev/null");
 
     // Generate data
     uint64_t nslots = (1ULL << qbits);
@@ -183,8 +232,17 @@ int main(int argc, char** argv) {
     bool auto_resize = true;
     
     // Configure filter
-    zeno_bench::ZenoFilterVM* filter = new zeno_bench::ZenoFilterVM(qbits, qbits + fbits, 1, 0.8);
-    filter->auto_resize(auto_resize);
+    ConcurrentFilter* filter = nullptr;
+    if (id == 1) {  // ZenoFilterVM
+        auto* f = new zeno_bench::ZenoFilterVM(qbits, qbits + fbits, 1, 0.8);
+        f->auto_resize(auto_resize);
+        filter = new ZenoFilterVMAdapter(f);
+    } 
+    else if (id == 2) {
+        auto* f = new zeno_bench::Quotient(qbits, qbits + fbits, 0.8);
+        f->auto_resize(auto_resize);
+        filter = new RSQFAdapter(f);
+    }
 
     // String for buffering results
     std::ostringstream str_insert;
@@ -208,7 +266,7 @@ int main(int argc, char** argv) {
     std::vector<std::vector<uint64_t>> query_time(query_nthreads);
 
     // Sample interval
-    uint64_t sample_interval = 10000;
+    uint64_t sample_interval = 100;
     uint64_t unit_time = 1000;
 
     // Measure start time
@@ -219,7 +277,7 @@ int main(int argc, char** argv) {
     for (uint64_t i = 0; i < nthreads; ++i) {
         const uint64_t* keys_start = keys + (i * nvals_per_thread);
         insert_threads.emplace_back(
-            insert_keys,
+            insert_keys<ConcurrentFilter*>,
             filter,
             keys_start,
             nvals_per_thread,
@@ -234,7 +292,7 @@ int main(int argc, char** argv) {
     for (uint64_t i = 0; i < query_nthreads; ++i) {
         const uint64_t* keys_start = queries + (i * nvals_per_query_thread);
         query_threads.emplace_back(
-            query_keys,
+            query_keys<ConcurrentFilter*>,
             filter,
             keys_start,
             nvals_per_query_thread,
@@ -264,8 +322,10 @@ int main(int argc, char** argv) {
     }
     
     file_insert << str_insert.str() << std::endl;
-    file_insert << str_query.str() << std::endl;
+    file_query << str_query.str() << std::endl;
     file_insert.close();
+    file_query.close();
+
     delete filter;
 
     return 0;

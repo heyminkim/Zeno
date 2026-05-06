@@ -25,6 +25,20 @@ class Quotient : public Filter {
         return filter->query(key, value, zeno::kNoLock) >= 1;
     }
 
+    bool concurrent_insert(const uint64_t key) {
+        bool res = filter->insert(key, 0, 1, zeno::kWaitForLock) >= 0;
+        return res;
+    }
+
+    bool concurrent_query(const uint64_t key) const {
+        uint64_t value;
+        return filter->query(key, value, zeno::kWaitForLock) >= 1;
+    }
+
+    uint64_t report_time() const {
+        return filter->get_expansion_time();
+    }
+
     bool remove(const uint64_t key) {
         filter->remove(key, 0, 1, zeno::kNoLock);
         return true;

@@ -73,7 +73,7 @@ public:
     bool Lookup(const char *key) const;
     bool Delete(const char *key);
 
-    void Extend();
+    bool Extend();
     void Compress();
 
     /**
@@ -164,7 +164,9 @@ bool BambooFilter::Insert(const char *key)
 
     if (!(num_items_ & split_condition_))
     {
-        Extend();
+        if (!Extend()) {
+            return false;
+        }
     }
 
     return true;
@@ -198,7 +200,7 @@ bool BambooFilter::Delete(const char *key)
     }
 }
 
-void BambooFilter::Extend()
+bool BambooFilter::Extend()
 {
     Segment *src = hash_table_[next_split_idx_];
     Segment *dst = new Segment(*src);
@@ -206,6 +208,9 @@ void BambooFilter::Extend()
 
     uint32_t num_seg_bits_ = (uint32_t)ceil(log2((double)hash_table_.size()));
     num_table_bits_ = num_seg_bits_ + BUCKETS_PER_SEG;
+
+    // The termination condition does not harm the performance of the filter. 
+    if (ACTV_TAG_BIT > BITS_PER_TAG - 3) return false;
 
     src->EraseEle(true, ACTV_TAG_BIT - 1);
     dst->EraseEle(false, ACTV_TAG_BIT - 1);
@@ -215,6 +220,7 @@ void BambooFilter::Extend()
     {
         next_split_idx_ = 0;
     }
+    return true;
 }
 
 void BambooFilter::Compress()

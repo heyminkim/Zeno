@@ -11,10 +11,74 @@
 #include "base.hpp"
 
 #include "zenofiltervm_template.hpp"
+#include "quotient_template.hpp"
 
 #include "../util/cxxopts.hpp"
 
-void insert_keys(zeno_bench::ZenoFilterVM* filter, const uint64_t* keys, uint64_t num_keys) {
+class ConcurrentFilter {
+    public:
+    virtual void concurrent_insert(uint64_t) = 0;
+    virtual bool concurrent_query(uint64_t) = 0;
+    virtual bool query(uint64_t) = 0;
+    virtual uint64_t report_time() const = 0;
+    virtual std::string name(bool) const = 0;
+    virtual ~ConcurrentFilter() = default;
+};
+
+class ZenoFilterVMAdapter : public ConcurrentFilter {
+    public:
+    zeno_bench::ZenoFilterVM* f;
+    explicit ZenoFilterVMAdapter(zeno_bench::ZenoFilterVM* f) : f(f) {}
+
+    void concurrent_insert(uint64_t k) override {
+        f->concurrent_insert(k);
+    }
+
+    bool concurrent_query(uint64_t k) override {
+        return f->concurrent_query(k);
+    }
+
+    bool query(uint64_t k) override {
+        return f->query(k);
+    }
+
+    uint64_t report_time() const {
+        return f->report_time();
+    }
+
+    std::string name(bool b) const override {
+        return f->name(b);
+    }
+};
+
+class RSQFAdapter : public ConcurrentFilter {
+    public:
+    zeno_bench::Quotient* f;
+    explicit RSQFAdapter(zeno_bench::Quotient* f) : f(f) {}
+
+    void concurrent_insert(uint64_t k) override {
+        f->concurrent_insert(k);
+    }
+
+    bool concurrent_query(uint64_t k) override {
+        return f->concurrent_query(k);
+    }
+
+    bool query(uint64_t k) override {
+        return f->query(k);
+    }
+
+    uint64_t report_time() const {
+        return f->report_time();
+    }
+
+    std::string name(bool b) const override {
+        return f->name(b);
+    }
+};
+
+template <typename T>
+void insert_keys(T filter, const uint64_t* keys, uint64_t num_keys) {
     for (uint64_t i = 0; i < num_keys; ++i) {
         filter->concurrent_insert(keys[i]);
     }
@@ -25,6 +89,7 @@ int main(int argc, char** argv) {
     options.add_options()
       ("q,quotient", "Length of quotient in bits", cxxopts::value<uint64_t>()->default_value("12"))
       ("f,fingerprint", "Length of fingerprint in bits", cxxopts::value<uint64_t>()->default_value("12"))
+      ("i,id", "Filter id", cxxopts::value<uint64_t>()->default_value("1"))
       ("e,expansion", "Number of expected expansions", cxxopts::value<uint64_t>()->default_value("1"))
       ("r,region", "Size of locking region in bits", cxxopts::value<uint64_t>()->default_value("12"))
       ("t,threads", "Number of threads", cxxopts::value<uint64_t>()->default_value("1"))
@@ -41,6 +106,7 @@ int main(int argc, char** argv) {
     uint64_t region = result["region"].as<uint64_t>();
     uint64_t nthreads = result["threads"].as<uint64_t>();
     uint64_t threshold = result["threshold"].as<uint64_t>();
+    uint64_t id = result["id"].as<uint64_t>();
 
     // Files to write results
     std::string fn_insert = result["fn_insert"].as<std::string>();
@@ -81,11 +147,23 @@ int main(int argc, char** argv) {
     bool auto_resize = true;
     
     // Configure filter
-    double exp_threshold = ((double)threshold) * 0.1;
-    zeno_bench::ZenoFilterVM* filter = new zeno_bench::ZenoFilterVM(qbits, qbits + fbits, 1, exp_threshold);
-    filter->auto_resize(auto_resize);
+    ConcurrentFilter* filter = nullptr;
+    if (id == 1) {  // ZenoFilterVM
+        auto* f = new zeno_bench::ZenoFilterVM(qbits, qbits + fbits, 1, 0.8);
+        f->auto_resize(auto_resize);
+        filter = new ZenoFilterVMAdapter(f);
+    } 
+    else if (id == 2) {
+        auto* f = new zeno_bench::Quotient(qbits, qbits + fbits, 0.8);
+        f->auto_resize(auto_resize);
+        filter = new RSQFAdapter(f);
+    }
 
-    file_insert << filter->name(false) << "con" << threshold << ",";
+#if defined(LOCKSLOTS)
+    file_insert << filter->name(false) << "con" << LOCKSLOTS << ",";
+#else
+    file_insert << filter->name(false) << "con" << expansions << ",";
+#endif
 
     // Aggregated insert time
     uint64_t insert_time = 0;
@@ -103,7 +181,7 @@ int main(int argc, char** argv) {
     for (uint64_t i = 0; i < nthreads; ++i) {
         const uint64_t* keys_start = keys + (i * nvals_per_thread);
         threads.emplace_back(
-            insert_keys,
+            insert_keys<ConcurrentFilter*>,
             filter,
             keys_start,
             nvals_per_thread

@@ -161,6 +161,8 @@ $RECYCLE.BIN/
 
 # End of https://www.toptal.com/developers/gitignore/api/cmake,c++,linux,git,visualstudiocode,windows,macos
 
+
+
 # Add additional gitignore files from here with comments:
 # ignore build files from CMake
 build/
@@ -171,3 +173,7 @@ build/
 # ignore data and result files
 data/
 results/
+
+# ignore remote evaluation script
+copy.sh
+results.sh

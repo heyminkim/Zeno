@@ -34,7 +34,7 @@ namespace zeno {
 // performance if you insert a skewed distribution of inputs.
 enum class hashmode {
     Default,
-    Invertible,     // Deprecated: do not use.
+    Invertible, 
     None
 };  // class hashmode
 

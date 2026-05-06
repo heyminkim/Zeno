@@ -110,11 +110,12 @@ We include scripts under the `scripts/` directory that reproduces all results in
     - `./scripts/exp_spaceamp.sh`: Experiment on the space amplification. 
     - `./scripts/exp_stretching.sh`: Experiment on average insert / query latency and false positive rate. 
 - `./scripts/exp2.sh`: Runs experiment 2 on in-place expansion. 
-- `./scripts/exp3.sh`: Runs experiment 3 on contraction and secondary hash table. 
-- `./scripts/exp4.sh`: Runs experiment 4 on concurrency. This runs the following scripts:
-    - `./scripts/exp_concurrency.sh`: Experiment on varying expansion thresholds and varying number of threads. 
-    - `./scripts/exp_concurrent_rw.sh`: Experiment on concurrent filter access (read / write) during expansion.
-- `./scripts/exp5.sh`: Runs experiment 5, comparing Zeno filter against other baselines. 
+- `./scripts/exp3.sh`: Runs experiment 3 on widening. 
+- `./scripts/exp4.sh`: Runs experiment 4 on Zeno Filter with fixed data block size. 
+- `./scripts/exp5.sh`: Runs experiment 5 on contraction and secondary hash table. 
+- `./scripts/exp6.sh`: Runs experiment 6 on concurrency. 
+- `./scripts/exp7.sh`: Runs experiment 7, comparing Zeno filter against other baselines. 
+- `./scripts/exp8.sh`: Runs experiment 8 on the impact of filter size with WiredTiger. 
 
 ### Results
 

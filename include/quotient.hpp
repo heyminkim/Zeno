@@ -1,3 +1,16 @@
+/*
+ * This file is a rewritten header-only C++ version of the original C-based
+ * project by Rob Johnson and Prahsant Pandey, licensed under the BSD 3-Clause 
+ * License.
+ *
+ * Original Copyright (c) 2017, Rob Johnson and Prahsant Pandey
+ * Copyright (c) 2025, Hyuhng Min Kim
+ * All rights reserved.
+ *
+ * This software is distributed under the BSD 3-Clause License.
+ * See LICENSE file for details.
+ */
+
 #pragma once
 
 #include <algorithm>
@@ -151,7 +164,8 @@ class Quotient {
 
     // Checks whether the filter is expanding. 
     bool is_filter_growing() const {
-        return runtimedata_->resizing_region.load(std::memory_order_acquire) >= 0;
+        // return runtimedata_->resizing_region.load(std::memory_order_acquire) >= 0;
+        return resizing_region.load(std::memory_order_acquire) >= 0;
     }
 
     /**
@@ -188,6 +202,10 @@ class Quotient {
 
     void print_by_index(uint64_t index) const {
         print_from_index(index);
+    }
+
+    uint64_t get_expansion_time() const {
+        return expansion_time;
     }
 
     void breakpoint() const {
@@ -313,9 +331,8 @@ class Quotient {
     // but currently 6 to fit 4096 slots QF into a single unit of RA for easier concurrency control. 
     static constexpr uint32_t kUnitOffsetBits = 6;
 
-    // INCREMENTAL
-    static constexpr uint64_t kNumSlotsToLock = 1ULL << 12;
-    static constexpr uint64_t kClusterSize = 1ULL << 11;
+    static constexpr uint64_t kNumSlotsToLock = 1ULL << 16;
+    static constexpr uint64_t kClusterSize = 1ULL << 14;
 
     /**
      * The filter block structure. The size of `slots` will be determined at runtime according to 
@@ -414,7 +431,7 @@ class Quotient {
         std::atomic<bool> resize_pending{false};
         std::shared_mutex spinlock_mutex;
         // Locks for announcing expansion and location of the iterator
-        std::atomic<int64_t> resizing_region{-1};
+        std::atomic<int64_t> resizing_region_{-1};
         // The upper region that the expansion thread is reading from
         std::atomic<int64_t> resizing_region_upper{-1};
         uint64_t max_locked_region = 0;
@@ -454,6 +471,15 @@ class Quotient {
     qfruntime*  runtimedata_;
     qfmetadata* metadata_;
     qfblock*    blocks_;
+
+    struct alignas(64) PaddedCounter {
+        std::atomic<int> count;
+        PaddedCounter() : count(0) {}
+    };
+
+    inline static std::vector<PaddedCounter> active_threads{128};
+    inline static std::atomic<int64_t> resizing_region{-1};
+    inline static uint64_t expansion_time = 0;
 
     /**
      * The below struct is used to instrument the code.
@@ -605,6 +631,24 @@ class Quotient {
         lock->lock_.unlock();
         return;
     }
+
+    /**
+     * Locks the portion of the filter indicated by `hash_bucket_index`.
+     *
+     * @param hash_bucket_index - The bucket indicating the target portion of
+     * the filter.
+     * @param small - idk
+     * @param runtime_lock - The lock type (kWaitForLock, kTryOnceLock, etc)
+     * @returns `true` if the portion was was successfully locked. `false` if it has failed 
+     * acquiring a lock.
+     */
+    bool qf_lock(uint64_t hash_bucket_index, bool small, uint8_t runtime_lock);
+
+    /**
+     * Unlocks the portion of the filter indicated by `hash_bucket_index`.
+     * @param hash_bucket_index - The bucket indicating the target portion of the filter.
+     */
+    void qf_unlock(uint64_t hash_bucket_index, bool small);
 
     /**
      * Locks the portion of the filter indicated by `hash_bucket_index`.
@@ -1177,11 +1221,11 @@ Quotient::Quotient(uint64_t exp_size, uint64_t hash_bits, uint64_t value_bits,
 }
 
 inline Quotient::~Quotient() {
-    if (runtimedata_) {
-        while (runtimedata_->resizing_region.load(std::memory_order_acquire) != -1) {
-            std::this_thread::yield();
-        }
-    }
+    // if (runtimedata_) {
+    //     while (resizing_region.load(std::memory_order_acquire) != -1) {
+    //         std::this_thread::yield();
+    //     }
+    // }
     if (metadata_) {
         delete metadata_;
     }
@@ -1210,44 +1254,30 @@ int Quotient::insert(uint64_t key, uint64_t value, uint64_t count, uint8_t flags
         if (metadata_->auto_resize) {
             int32_t grow_ret = 1;
 
-            if (GET_NO_LOCK(flags) == kNoLock && GET_IS_FILTER_GROWING(flags) != kIsFilterGrowing) {
-                const auto start = std::chrono::high_resolution_clock::now();
+            if (GET_NO_LOCK(flags) == kNoLock) {
                 grow_ret = grow(0, 0, flags);
-                const auto end = std::chrono::high_resolution_clock::now();
-                runtimedata_->total_grow_time += std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
-                // std::cout << "took " << std::chrono::duration_cast<std::chrono::microseconds>(end - start).count()
-                //                      << " microseconds" << std::endl;
             } else {
                 int64_t expected_region = -1;
-                int64_t max_region = (metadata_->nslots - 1) / kNumSlotsToLock;
-                // We were the first one to trigger grow
-                if (runtimedata_->resizing_region.compare_exchange_strong(expected_region, 
-                                                  max_region, std::memory_order_acq_rel)) {
-                    int64_t max_region_upper = metadata_->xnslots / kNumSlotsToLock;
-                    runtimedata_->resizing_region_upper.store(max_region_upper, 
-                                                              std::memory_order_release);
-                    std::thread([this, flags]() {
-                        // std::cout << "< growing >" << std::endl;
-                        const auto start = std::chrono::high_resolution_clock::now();
-                        // std::cout << "flags " << std::bitset<8>(flags) << std::endl;
-                        // std::cout << "expansion thread id : " << std::this_thread::get_id() << std::endl;
-                        this->grow(0, 0, flags);
-                        const auto end = std::chrono::high_resolution_clock::now();
-                        runtimedata_->total_grow_time += std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
-                        // std::cout << "< growing finished >" << std::endl;
-                        // std::cout << "took " << std::chrono::duration_cast<std::chrono::microseconds>(end - start).count()
-                        //           << " microseconds" << std::endl;
-                        // print_lock_status(false);
-                    }).detach();
+
+                if (resizing_region.compare_exchange_strong(expected_region, 0, 
+                    std::memory_order_seq_cst)) {
+
+                    for (auto& counter : active_threads) {
+                        while (counter.count.load(std::memory_order_seq_cst) > 0) {
+                            std::this_thread::yield(); 
+                        }
+                    }
+                    expansion_time += util::timing([&] {
+                        grow_ret = grow(0, 0, flags);
+                    });
+                    
+                    resizing_region.store(-1, std::memory_order_release);
+                    resizing_region.notify_all();
                 } else {
-                    // Don't grow otherwise
+                    while (resizing_region.load(std::memory_order_acquire) == 0) {
+                        resizing_region.wait(0, std::memory_order_relaxed);
+                    }
                 }
-            }
-            if (grow_ret <= 0) {
-                if (grow_ret == kErrNoSpace) std::cerr << "Resize failed: no space" << std::endl;
-                if (grow_ret == kErrNoFpBits) std::cerr << "Resize failed: no fp bits" << std::endl;
-                if (grow_ret == kErrCouldntLock) std::cerr << "Resize failed: failed to lock" << std::endl;
-                return grow_ret;
             }
         }
         else {
@@ -1256,13 +1286,6 @@ int Quotient::insert(uint64_t key, uint64_t value, uint64_t count, uint8_t flags
     }
 
     if (count == 0) return 0;
-
-    if (GET_NO_LOCK(flags) != kNoLock) {
-        // while (runtimedata_->resize_pending.load(std::memory_order_acquire)) {
-        while (runtimedata_->resizing_region.load(std::memory_order_acquire) == 0) {
-            std::this_thread::yield();
-        }
-    }
 
     if (GET_KEY_HASH(flags) != kKeyIsHash) {
         auto hash_mode = get_hashmode();
@@ -1290,8 +1313,6 @@ int Quotient::insert(uint64_t key, uint64_t value, uint64_t count, uint8_t flags
         float load_factor = count_occupied_slots() / (float)metadata_->nslots;
         if (metadata_->auto_resize) {
             fprintf(stdout, "Resizing filter...\n");
-            std::cout << "ret " << ret << std::endl;
-            std::cout << "failed thread : " << std::this_thread::get_id() << std::endl;
             ret = grow(hash, count, flags);
             if (ret > 0) {
                 std::cerr << "Resize finished." << std::endl;
@@ -1300,7 +1321,7 @@ int Quotient::insert(uint64_t key, uint64_t value, uint64_t count, uint8_t flags
                 ret = kErrNoSpace;
             }
         } else {
-            std::cerr << "Zeno filter is filling up." << std::endl;
+            std::cerr << "RSQF is filling up." << std::endl;
             ret = kErrNoSpace;
         }
     }
@@ -1404,6 +1425,22 @@ int64_t Quotient::grow(uint64_t dangling_hash, uint64_t dangling_count, uint8_t 
 
 // TODO: change logic to query for longest matching kv, similar to remove_internal
 uint64_t Quotient::query(uint64_t key, uint64_t& value, uint8_t flags) {
+    size_t thread_idx;
+    if (GET_NO_LOCK(flags) != kNoLock) {
+        thread_idx = std::hash<std::thread::id>{}(std::this_thread::get_id()) % active_threads.size();
+        while (true) {
+            active_threads[thread_idx].count.fetch_add(1, std::memory_order_seq_cst);
+            if (resizing_region.load(std::memory_order_seq_cst) != -1) {
+                active_threads[thread_idx].count.fetch_sub(1, std::memory_order_seq_cst);
+                while (resizing_region.load(std::memory_order_acquire) == 0) {
+                    resizing_region.wait(0, std::memory_order_relaxed);
+                }
+                continue;
+            }
+            break;
+        }
+    }
+
     if (GET_KEY_HASH(flags) != kKeyIsHash) {
         if (metadata_->hash_mode == hashmode::Default) {
             // Use the upper `hash_bit` bits of the hashed result
@@ -1417,32 +1454,27 @@ uint64_t Quotient::query(uint64_t key, uint64_t& value, uint8_t flags) {
     uint64_t hash_bucket_index = hash >> metadata_->fingerprint_bits;
 
     int64_t start_region;      // For storing the first region to lock/unlock
+    int64_t clusterend_region; // For storing the last region to lock/unlock
 
     // If a query falls into an expanding region, wait until migration is done to the new region. 
     if (GET_NO_LOCK(flags) != kNoLock) {
-        start_region = hash_bucket_index / kNumSlotsToLock;
-
-        while (runtimedata_->resize_pending.load(std::memory_order_acquire)) {
-            std::this_thread::yield();
-        }
-
-        if (GET_SECOND_TRY_LOCK(flags) == kSecondTryLock) {
-            while (runtimedata_->resizing_region_upper.load(std::memory_order_acquire) >= 
-                   start_region) {
-                std::this_thread::yield();
-            }
-        }
         
-        if (!zeno_lock_region_conditionally(start_region, flags)) {
-            return 0;
-        } else {
-            // Successfully locked target region
-        }
+        clusterend_region = hash_bucket_index / kNumSlotsToLock;
+        start_region = clusterend_region;
+
+        // if (!zeno_lock_region_conditionally(start_region, flags | kSecondTryLock)) {
+        //     return kErrCouldntLock;
+        // }
+        // std::cout << "query locking " << clusterend_region << std::endl;
+        qf_lock(hash_bucket_index, true, flags);
+        // std::cout << "query locked  " << clusterend_region << std::endl;
     }
 
     if (!is_occupied(hash_bucket_index)) {
         if (GET_NO_LOCK(flags) != kNoLock) {
-            zeno_unlock_region(start_region);
+            // zeno_unlock_region(start_region);
+            qf_unlock(hash_bucket_index, true);
+            active_threads[thread_idx].count.fetch_sub(1, std::memory_order_release);
         }
         return 0;
     }
@@ -1455,50 +1487,50 @@ uint64_t Quotient::query(uint64_t key, uint64_t& value, uint8_t flags) {
 
     uint64_t current_remainder, current_count, current_end;
     uint64_t runend_index = run_end(hash_bucket_index);
+    // if (GET_NO_LOCK(flags) == kNoLock) runend_index = run_end(hash_bucket_index);
+    // else {
+    //     if (zeno_lock_cluster(hash_bucket_index, runend_index, clusterend_region, flags | kSecondTryLock) 
+    //         == kErrCouldntLock) { // Regions are unlocked inside
+    //         return kErrCouldntLock;
+    //     } else {
+    //         // Locked region
+    //     }
+    // }
 
-    // TODO
-    uint64_t A = BITMASK(metadata_->fingerprint_bits);
-    uint64_t B = A - 1;
     do {
         current_end = decode_counter(runstart_index, current_remainder, current_count);
         value = current_remainder & BITMASK(metadata_->value_bits);
         current_remainder = current_remainder >> metadata_->value_bits;
         if (current_remainder == hash_remainder) {
+            if (GET_NO_LOCK(flags) != kNoLock) {
+                // while (true) {
+                //     zeno_unlock_region(clusterend_region);
+                //     if (clusterend_region == start_region) break;
+                //     --clusterend_region;
+                // }
+
+                // std::cout << "query unlock " << hash_bucket_index << std::endl;
+                qf_unlock(hash_bucket_index, true);
+                active_threads[thread_idx].count.fetch_sub(1, std::memory_order_release);
+            }
             return current_count;
         }
         runstart_index = current_end + 1;
     } while (runend_index != current_end);
 
     if (GET_NO_LOCK(flags) != kNoLock) {
-        zeno_unlock_region(start_region);
+        // while (true) {
+        //     zeno_unlock_region(clusterend_region);
+        //     if (clusterend_region == start_region) break;
+        //     --clusterend_region;
+        // }
+
+        // std::cout << "query unlock " << hash_bucket_index << std::endl;
+        qf_unlock(hash_bucket_index, true);
+        active_threads[thread_idx].count.fetch_sub(1, std::memory_order_release);
     }
 
     return 0;
-}
-
-uint64_t Quotient::concurrent_query(uint64_t key, uint64_t& value, uint8_t flags) {
-    uint64_t original_key;
-    if (GET_KEY_HASH(flags) != kKeyIsHash) {
-        if (metadata_->hash_mode == hashmode::Default) {
-            // Use the upper `hash_bit` bits of the hashed result
-            original_key = MurmurHash64A((void*)&key, sizeof(key), metadata_->seed);
-            key = (original_key >> (64ULL - metadata_->hash_bits));
-        }
-        else if (metadata_->hash_mode == hashmode::Invertible)
-            key = hash_64(key, BITMASK(metadata_->hash_bits));
-    }
-    uint64_t count = query(key, value, kWaitForLock | kKeyIsHash);
-    if (flags & kWaitForLock) {
-        if (count == 0 && runtimedata_->resizing_region.load(std::memory_order_acquire) >= 0) {
-            // query again
-            key = original_key >> (64ULL - metadata_->hash_bits - 1);
-            return count;
-        } else {
-            return count;
-        }
-    } else {
-        return count;
-    }
 }
 
 inline
@@ -1510,33 +1542,39 @@ int Quotient::insert1(uint64_t hash, uint8_t flags) {
     int64_t start_region;      // For storing the first region to lock/unlock
     int64_t clusterend_region; // For storing the last region to lock/unlock
 
+    size_t thread_idx;
+
     if (GET_NO_LOCK(flags) != kNoLock) {
         clusterend_region = hash_bucket_index / kNumSlotsToLock;
         start_region = clusterend_region;
 
-        while (runtimedata_->resize_pending.load(std::memory_order_acquire)) {
-            std::this_thread::yield();
+        thread_idx = std::hash<std::thread::id>{}(std::this_thread::get_id()) % active_threads.size();
+        while (true) {
+            active_threads[thread_idx].count.fetch_add(1, std::memory_order_seq_cst);
+            if (resizing_region.load(std::memory_order_seq_cst) != -1) {
+                active_threads[thread_idx].count.fetch_sub(1, std::memory_order_seq_cst);
+                while (resizing_region.load(std::memory_order_acquire) == 0) {
+                    resizing_region.wait(0, std::memory_order_relaxed);
+                }
+                continue;
+            }
+            break;
         }
 
-        if (!zeno_lock_region_conditionally(start_region, flags)) {
-            hash = adjust_fingerprint_length(hash_bucket_index, hash_remainder);
-            hash_bucket_block_offset = hash_bucket_index % kSlotsPerBlock;
-            // Now every attempt to lock a region is a second try
-            flags |= kSecondTryLock;
-            clusterend_region = hash_bucket_index / kNumSlotsToLock;
-            start_region = clusterend_region;
-            while (runtimedata_->resizing_region_upper.load(std::memory_order_acquire) >= 
-                   clusterend_region) {
-                std::this_thread::yield();
-            }
-            if (!zeno_lock_region_conditionally(clusterend_region, flags)) {
-                return kErrCouldntLock;
-            }
-        } else {
-            // Locked region
-        }
+        // if (!zeno_lock_region_conditionally(start_region, flags | kSecondTryLock)) {
+        //     return kErrCouldntLock;
+        // }
+        // std::cout << "insert locking " << clusterend_region << std::endl;
+        
+
+        // 0130mod
+        qf_lock(hash_bucket_index, true, flags);
+        // if (!zeno_lock_region_conditionally(start_region, flags)) {
+        //     return kErrCouldntLock;
+        // }
+
+        // std::cout << "insert locked  " << clusterend_region << std::endl;
     }
-    uint64_t esi = 1, pop = 0;
     if (is_empty(hash_bucket_index)) {
         METADATA_WORD(runends, hash_bucket_index) |= 1ULL << (hash_bucket_block_offset % 64);
         set_slot(hash_bucket_index, hash_remainder);
@@ -1545,44 +1583,30 @@ int Quotient::insert1(uint64_t hash, uint8_t flags) {
         ret_distance = 0;
         modify_metadata(metadata_->pc_noccupied_slots, 1);
     } else {
-        uint64_t runend_index;
-        // INCREMENTAL
-        if (GET_NO_LOCK(flags) == kNoLock) runend_index = run_end(hash_bucket_index);
-        else {
-            if (zeno_lock_cluster(hash_bucket_index, runend_index, clusterend_region, flags) 
-                == kErrCouldntLock) { // Regions are unlocked inside
-                hash = adjust_fingerprint_length(hash_bucket_index, hash_remainder);
-                hash_bucket_block_offset = hash_bucket_index % kSlotsPerBlock;
-                flags |= kSecondTryLock;
-                clusterend_region = hash_bucket_index / kNumSlotsToLock;
-                start_region = clusterend_region;
-                while (runtimedata_->resizing_region_upper.load(std::memory_order_acquire) >= 
-                    clusterend_region) {
-                    std::this_thread::yield();
-                }
-                if (!zeno_lock_region_conditionally(clusterend_region, flags)) {
-                    return kErrCouldntLock;
-                }
-                // If new index is empty, insert fingerprint and escape
-                if (is_empty(hash_bucket_index)) {
-                    METADATA_WORD(runends, hash_bucket_index) |= 1ULL << (hash_bucket_block_offset % 64);
-                    set_slot(hash_bucket_index, hash_remainder);
-                    METADATA_WORD(occupieds, hash_bucket_index) |= 1ULL << (hash_bucket_block_offset % 64);
-                    ret_distance = 0;
-                    modify_metadata(metadata_->pc_noccupied_slots, 1);
+        // 0130 mod
+        uint64_t runend_index = run_end(hash_bucket_index);
+        // uint64_t runend_index;
+        // if (GET_NO_LOCK(flags) == kNoLock) runend_index = run_end(hash_bucket_index);
+        // else {
+        //     if (zeno_lock_cluster(hash_bucket_index, runend_index, clusterend_region, flags)
+        //         == kErrCouldntLock) {
+        //         return kErrCouldntLock;
+        //     } else {
 
-                    zeno_unlock_region(clusterend_region);
-                    return ret_distance;
-                }
-                // Otherwise, proceed locking subsequent regions belonging to the cluster
-                if (zeno_lock_cluster(hash_bucket_index, runend_index, clusterend_region, flags)
-                    == kErrCouldntLock) {
-                    return kErrCouldntLock;
-                }
-            } else {
-                // Locked region
-            }
-        }
+        //     }
+        // }
+
+        // INCREMENTAL
+        // if (GET_NO_LOCK(flags) == kNoLock) runend_index = run_end(hash_bucket_index);
+        // else {
+        //     if (zeno_lock_cluster(hash_bucket_index, runend_index, clusterend_region, flags | kSecondTryLock) 
+        //         == kErrCouldntLock) { // Regions are unlocked inside
+        //         return kErrCouldntLock;
+        //     } else {
+        //         // Locked region
+        //         std::cout << clusterend_region << "? ";
+        //     }
+        // }
 
         int operation = 0; /* Insert into empty bucket */
         uint64_t insert_index = runend_index + 1;
@@ -1790,11 +1814,20 @@ int Quotient::insert1(uint64_t hash, uint8_t flags) {
     }
 
     if (GET_NO_LOCK(flags) != kNoLock) {
-        while (true) {
-            zeno_unlock_region(clusterend_region);
-            if (clusterend_region == start_region) break;
-            --clusterend_region;
-        }
+        // while (true) {
+        //     zeno_unlock_region(clusterend_region);
+        //     if (clusterend_region == start_region) break;
+        //     --clusterend_region;
+        // }
+        // 0130 mod
+        qf_unlock(hash_bucket_index, true);
+        active_threads[thread_idx].count.fetch_sub(1, std::memory_order_release);
+        // while (true) {
+        //     zeno_unlock_region(clusterend_region);
+        //     if (clusterend_region == start_region) break;
+        //     --clusterend_region;
+        // }
+        // active_threads[thread_idx].count.fetch_sub(1, std::memory_order_relaxed);
     }
 
     return ret_distance;
@@ -1911,342 +1944,6 @@ int Quotient::insertN(uint64_t hash, uint64_t count, uint8_t flags) {
     }
 
     return ret_distance;
-}
-
-inline
-int Quotient::insert_void_sequence(uint64_t begin, uint64_t end, uint64_t count, uint8_t flags) {
-    // TODO
-    uint64_t A = BITMASK(metadata_->fingerprint_bits);
-    uint64_t B = A - 1;
-    // Inserting gen 1 void sequence of length 1. Encoding: [BA]
-    // This insertion always stays at the very front of any run. 
-    if (begin == end) {
-        if (GET_NO_LOCK(flags) != kNoLock) {
-            if (!zeno_lock(begin, /*small*/ true, flags)) {
-                return kErrCouldntLock;
-            }
-        }
-
-        uint64_t new_values[67];
-        int64_t runstart_index = begin == 0
-                               ? 0
-                               : run_end(begin - 1) + 1;
-        bool ret;
-
-        // Empty bucket. Because we are scanning right to left, if a slot has
-        // its is_occupied bit not set, we are guaranteed that the slot does not
-        // contain any entry from any existing runs. 
-        if (!is_occupied(begin)) {
-            uint64_t* p = encode_counter(A, 1, &new_values[67]);
-            p = encode_counter(B, count, p);
-
-            ret = shift_for_inserts(0,
-                                    begin,
-                                    runstart_index, 
-                                    p, 
-                                    &new_values[67] - p,
-                                    0);
-            METADATA_WORD(occupieds, begin) |= 1ULL << (begin % 64);
-            if (!ret) return kErrNoSpace;
-            // TODO: increase metadata for number of void entries
-        } else {
-            uint64_t runend_index = run_end(begin);
-            uint64_t current_remainder, current_count;
-
-            uint64_t current_end = decode_counter(runstart_index,
-                                                  current_remainder,
-                                                  current_count);
-            while ((current_remainder != A && current_remainder != B) &&
-                   (current_end != runend_index)) {
-                    runstart_index = current_end + 1;
-                    current_end = decode_counter(runstart_index,
-                                                 current_remainder,
-                                                 current_count);
-            }
-
-            // Found an A sequence from gen N. Add in the new count.
-            if (current_remainder == A) {
-                uint64_t* p = encode_counter(A, current_count + 1,
-                                             &new_values[67]);
-                p = encode_counter(B, count, p);
-                ret = shift_for_inserts(is_runend(current_end) ? 1 : 2, 
-                                        begin,
-                                        runstart_index, 
-                                        p, 
-                                        &new_values[67] - p,
-                                        current_end - runstart_index + 1);
-            
-            // Found a B sequence from gen N. Push the gen N sequence. 
-            } else if (current_remainder == B) {
-                uint64_t* p = encode_counter(A, 1, &new_values[67]);
-                p = encode_counter(B, count, p);
-                ret = shift_for_inserts(2, /* Insert to bucket */
-                                        begin,
-                                        runstart_index, 
-                                        p, 
-                                        &new_values[67] - p,
-                                        0);
-            // We did not encounter any void sequences. Insert gen 1 sequence at
-            // the end of the run
-            } else {
-                uint64_t* p = encode_counter(A, 1, &new_values[67]);
-                p = encode_counter(B, count, p);
-                ret = shift_for_inserts(1, 
-                                        begin, 
-                                        current_end + 1,
-                                        p,
-                                        &new_values[67] - p,
-                                        0);
-            }
-            
-            
-        }
-    
-    // Inserting gen N (N>1) void sequence. Encoding: [A][B]..[B][A]
-    } else {
-        if (GET_NO_LOCK(flags) != kNoLock) {
-            if (!zeno_lock(begin, /*small*/ true, flags) ||
-                !zeno_lock(end, /*small*/ true, flags)) {
-                return kErrCouldntLock;
-            }
-        }
-
-        bool ret;
-        uint64_t runstart_index = begin == 0
-                                ? 0
-                                : run_end(begin - 1) + 1;
-
-        // TODO: fix ret logic
-        ret = insert_A_internal(begin, runstart_index, count);
-        runstart_index = run_end(begin) + 1;
-        for (uint64_t i = begin + 1; i < end; ++i) {
-            ret = insert_B_internal(i, runstart_index, count);
-            runstart_index = run_end(i) + 1;
-        }
-        ret = insert_A_internal(end, runstart_index, count);
-
-    }
-
-    return 0;
-}
-
-inline
-int Quotient::insert_A_internal(uint64_t& hash_index, uint64_t& runstart_index, uint64_t count) {
-    // TODO
-    uint64_t A = BITMASK(metadata_->fingerprint_bits);
-    uint64_t B = A - 1;
-    
-    uint64_t new_values[67];
-    bool ret;
-    if (!is_occupied(hash_index)) {
-        uint64_t* p = encode_counter(A, count, &new_values[67]);
-
-        ret = shift_for_inserts(0,
-                                hash_index,
-                                runstart_index, 
-                                p, 
-                                &new_values[67] - p,
-                                0);
-        METADATA_WORD(occupieds, hash_index) |= 1ULL << (hash_index % 64);
-        if (!ret) return kErrNoSpace;
-        // TODO: increase metadata for number of void entries
-    } else {
-        uint64_t runend_index = run_end(hash_index);
-        uint64_t current_remainder, current_count;
-
-        uint64_t current_end = decode_counter(runstart_index,
-                                              current_remainder,
-                                              current_count);
-        while ((current_remainder != A && current_remainder != B) &&
-                (current_end != runend_index)) {
-                runstart_index = current_end + 1;
-                current_end = decode_counter(runstart_index,
-                                             current_remainder,
-                                             current_count);
-        }
-
-        // Found an A sequence from gen N. Add in the new count.
-        if (current_remainder == A) {
-            uint64_t* p = encode_counter(A, current_count + count, &new_values[67]);
-            ret = shift_for_inserts(current_end == runend_index ? 1 : 2, 
-                                    hash_index,
-                                    runstart_index, 
-                                    p, 
-                                    &new_values[67] - p,
-                                    current_end - runstart_index + 1);
-        
-        // Found a B sequence. This is either a gen 1 seq or a middle seq of gen N. 
-        } else if (current_remainder == B) {
-            // gen 1 seq. There is always a delimiting A. 
-            if (current_end != runend_index) {
-                runstart_index = current_end + 1;
-                current_end = decode_counter(runstart_index,
-                                             current_remainder,
-                                             current_count);
-
-                uint64_t* p = encode_counter(A, current_count + count, &new_values[67]);
-                ret = shift_for_inserts(current_end == runend_index ? 1 : 2, 
-                                        hash_index,
-                                        runstart_index, 
-                                        p, 
-                                        &new_values[67] - p,
-                                        current_end - runstart_index + 1);
-            
-            // gen N seq. This is always the end of a run.
-            } else {
-                assert(current_end == runend_index);
-                uint64_t* p = encode_counter(A, count, &new_values[67]);
-                ret = shift_for_inserts(1, 
-                                        hash_index, 
-                                        current_end + 1,
-                                        p,
-                                        &new_values[67] - p,
-                                        0);
-            }
-        // We did not encounter any void sequences. Insert A sequence at the end
-        // of the run
-        } else {
-            uint64_t* p = encode_counter(A, count, &new_values[67]);
-            ret = shift_for_inserts(1, 
-                                    hash_index, 
-                                    current_end + 1,
-                                    p,
-                                    &new_values[67] - p,
-                                    0);
-        }
-    }
-    return ret;
-}
-
-inline
-int Quotient::insert_B_internal(uint64_t& hash_index, uint64_t& runstart_index, 
-    uint64_t count) {
-    // TODO
-    uint64_t A = BITMASK(metadata_->fingerprint_bits);
-    uint64_t B = A - 1;
-
-    uint64_t new_values[67];
-    bool ret;
-    if (!is_occupied(hash_index)) {
-        uint64_t* p = encode_counter(B, count, &new_values[67]);
-
-        ret = shift_for_inserts(0,
-                                hash_index,
-                                runstart_index, 
-                                p, 
-                                &new_values[67] - p,
-                                0);
-        METADATA_WORD(occupieds, hash_index) |= 1ULL << (hash_index % 64);
-        if (!ret) return kErrNoSpace;
-        // TODO: increase metadata for number of void entries
-    } else {
-        uint64_t runend_index = run_end(hash_index);
-        uint64_t current_remainder, current_count;
-
-        uint64_t current_end = decode_counter(runstart_index,
-                                              current_remainder,
-                                              current_count);
-        while ((current_remainder != A && current_remainder != B) &&
-                (current_end != runend_index)) {
-                runstart_index = current_end + 1;
-                current_end = decode_counter(runstart_index,
-                                             current_remainder,
-                                             current_count);
-        }
-
-        // Found an A sequence from gen N. Check if there are following Bs.
-        if (current_remainder == A) {
-            // There are no following Bs; append B at the end.
-            if (current_end == runend_index) {
-                uint64_t* p = encode_counter(B, count, &new_values[67]);
-                ret = shift_for_inserts(1,
-                                        hash_index,
-                                        current_end + 1,
-                                        p,
-                                        &new_values[67] - p,
-                                        0);
-            // There are some following Bs. This is always the end of a run.
-            } else {
-                runstart_index = current_end + 1;
-                current_end = decode_counter(runstart_index,
-                                             current_remainder,
-                                             current_count);
-                assert(current_end == runend_index);
-
-                uint64_t* p = encode_counter(B, current_count + count, 
-                                             &new_values[67]);
-                ret = shift_for_inserts(1,
-                                        hash_index,
-                                        runstart_index,
-                                        p,
-                                        &new_values[67] - p,
-                                        current_end - runstart_index + 1);
-            }
-        
-        // Found a B sequence. This is either a gen 1 seq or a middle seq of gen N. 
-        } else if (current_remainder == B) {
-            // gen 1 seq. There is always a delimiting A. 
-            if (current_end != runend_index) {
-                // Skip over the A sequence
-                runstart_index = current_end + 1;
-                current_end = decode_counter(runstart_index,
-                                             current_remainder,
-                                             current_count);
-                // There are following Bs
-                if (current_end != runend_index) {
-                    // Read the B sequence
-                    runstart_index = current_end + 1;
-                    current_end = decode_counter(runstart_index,
-                                                 current_remainder,
-                                                 current_count);
-                    
-                    uint64_t* p = encode_counter(B, current_count + count, &new_values[67]);
-
-                    ret = shift_for_inserts(1,
-                                            hash_index,
-                                            runstart_index,
-                                            p,
-                                            &new_values[67] - p,
-                                            current_end - runstart_index + 1);
-
-                // This is the first B seq to be inserted after the A seq. This
-                // is always the end of a run. 
-                } else {
-                    uint64_t* p = encode_counter(B, count, &new_values[67]);
-                    ret = shift_for_inserts(1,
-                                            hash_index,
-                                            current_end + 1,
-                                            p,
-                                            &new_values[67] - p,
-                                            0);
-                }
-                
-            // gen N seq. This is always the end of a run. 
-            } else {
-                uint64_t* p = encode_counter(B, current_count + count, 
-                                             &new_values[67]);
-                ret = shift_for_inserts(1,
-                                        hash_index,
-                                        runstart_index,
-                                        p,
-                                        &new_values[67] - p,
-                                        current_end - runstart_index + 1);
-            }
-
-        // We did not encounter any void sequences. Insert B sequence at the end
-        // of the run
-        } else {
-            uint64_t* p = encode_counter(B, count, &new_values[67]);
-            ret = shift_for_inserts(1, 
-                                    hash_index, 
-                                    current_end + 1,
-                                    p,
-                                    &new_values[67] - p,
-                                    0);
-            runend_index += &new_values[67] - p;
-        }
-    }
-    return ret;
 }
 
 inline
@@ -2563,6 +2260,87 @@ inline int Quotient::remove_internal(uint64_t hash, uint64_t count, uint8_t runt
     return ret_numfreedslots;
 }
 
+inline bool Quotient::qf_lock(uint64_t hash_bucket_index, bool small, uint8_t runtime_lock) {
+    uint64_t hash_bucket_lock_offset  = hash_bucket_index % kNumSlotsToLock;
+    // Read-lock the spinlock array. This blocks the expansion thread from modifying the spinlock
+    // array when threads may be spinning on it. 
+    if (small) {
+#ifdef LOG_WAIT_TIME
+        if (!spin_lock(&runtimedata->locks[hash_bucket_index / num_slots_to_lock],
+                    hash_bucket_index / num_slots_to_lock, runtime_lock))
+            return false;
+        if (num_slots_to_lock - hash_bucket_lock_offset <= cluster_size) {
+            if (!spin_lock(&runtimedata->locks[hash_bucket_index / num_slots_to_lock + 1],
+                        hash_bucket_index / num_slots_to_lock + 1, runtime_lock)) {
+                spin_unlock(&runtimedata->locks[hash_bucket_index / num_slots_to_lock]);
+                return false;
+            }
+        }
+#else
+        int64_t region = hash_bucket_index / kNumSlotsToLock;
+        if (!spin_lock(&runtimedata_->locks[region], runtime_lock)) {
+            return false;
+        }
+        if (kNumSlotsToLock - hash_bucket_lock_offset <= kClusterSize) {
+            if (!spin_lock(&runtimedata_->locks[region + 1], runtime_lock)) {
+                spin_unlock(&runtimedata_->locks[region]);
+                return false;
+            }
+        }
+#endif
+    } else {
+#ifdef LOG_WAIT_TIME
+        if (hash_bucket_index >= num_slots_to_lock && hash_bucket_lock_offset <= cluster_size) {
+            if (!spin_lock(&runtimedata->locks[hash_bucket_index / num_slots_to_lock - 1], runtime_lock))
+                return false;
+        }
+        if (!spin_lock(&runtimedata->locks[hash_bucket_index / num_slots_to_lock], runtime_lock)) {
+            if (hash_bucket_index >= num_slots_to_lock && hash_bucket_lock_offset <= cluster_size)
+                spin_unlock(&runtimedata->locks[hash_bucket_index / num_slots_to_lock - 1]);
+            return false;
+        }
+        if (!spin_lock(&runtimedata->locks[hash_bucket_index / num_slots_to_lock + 1], runtime_lock)) {
+            spin_unlock(&runtimedata->locks[hash_bucket_index / num_slots_to_lock]);
+            if (hash_bucket_index >= num_slots_to_lock && hash_bucket_lock_offset <= cluster_size)
+                spin_unlock(&runtimedata->locks[hash_bucket_index / num_slots_to_lock - 1]);
+            return false;
+        }
+#else
+        if (hash_bucket_index >= kNumSlotsToLock && hash_bucket_lock_offset <= kClusterSize) {
+            if (!spin_lock(&runtimedata_->locks[hash_bucket_index / kNumSlotsToLock - 1], runtime_lock))
+                return false;
+        }
+        if (!spin_lock(&runtimedata_->locks[hash_bucket_index / kNumSlotsToLock], runtime_lock)) {
+            if (hash_bucket_index >= kNumSlotsToLock && hash_bucket_lock_offset <= kClusterSize)
+                spin_unlock(&runtimedata_->locks[hash_bucket_index / kNumSlotsToLock - 1]);
+            return false;
+        }
+        if (!spin_lock(&runtimedata_->locks[hash_bucket_index / kNumSlotsToLock + 1], runtime_lock)) {
+            spin_unlock(&runtimedata_->locks[hash_bucket_index / kNumSlotsToLock]);
+            if (hash_bucket_index >= kNumSlotsToLock && hash_bucket_lock_offset <= kClusterSize)
+                spin_unlock(&runtimedata_->locks[hash_bucket_index / kNumSlotsToLock - 1]);
+            return false;
+        }
+#endif
+    }
+    return true;
+}
+
+inline void Quotient::qf_unlock(uint64_t hash_bucket_index, bool small) {
+    uint64_t hash_bucket_lock_offset  = hash_bucket_index % kNumSlotsToLock;
+    if (small) {
+        if (kNumSlotsToLock - hash_bucket_lock_offset <= kClusterSize) {
+            spin_unlock(&runtimedata_->locks[hash_bucket_index / kNumSlotsToLock + 1]);
+        }
+        spin_unlock(&runtimedata_->locks[hash_bucket_index / kNumSlotsToLock]);
+    } else {
+        spin_unlock(&runtimedata_->locks[hash_bucket_index / kNumSlotsToLock + 1]);
+        spin_unlock(&runtimedata_->locks[hash_bucket_index / kNumSlotsToLock]);
+        if (hash_bucket_index >= kNumSlotsToLock && hash_bucket_lock_offset <= kClusterSize)
+            spin_unlock(&runtimedata_->locks[hash_bucket_index / kNumSlotsToLock - 1]);
+    }
+}
+
 inline bool Quotient::zeno_lock(uint64_t hash_bucket_index, 
                             bool small, 
                             uint8_t runtime_lock) {
@@ -2587,19 +2365,19 @@ inline bool Quotient::zeno_lock(uint64_t hash_bucket_index,
         }
 #else
         int64_t region = hash_bucket_index / kNumSlotsToLock;
-        if (region < runtimedata_->resizing_region.load(std::memory_order_acquire)) {
-            if (!spin_lock_conditionally(&runtimedata_->locks[region], region, runtimedata_->resizing_region, runtime_lock)) {
+        if (region < resizing_region.load(std::memory_order_acquire)) {
+            if (!spin_lock_conditionally(&runtimedata_->locks[region], region, resizing_region, runtime_lock)) {
                 return false;
             }
             if (kNumSlotsToLock - hash_bucket_lock_offset <= kClusterSize) {
                 if (!spin_lock_conditionally(&runtimedata_->locks[region + 1], 
-                                             region, runtimedata_->resizing_region, runtime_lock)) {
+                                             region, resizing_region, runtime_lock)) {
                     spin_unlock(&runtimedata_->locks[region]);
                     return false;
                 }
             }
         } else {
-            if (runtimedata_->resizing_region.load(std::memory_order_acquire) == -1 || 
+            if (resizing_region.load(std::memory_order_acquire) == -1 || 
                 GET_SECOND_TRY_LOCK(runtime_lock)) {
                 if (!spin_lock(&runtimedata_->locks[region], runtime_lock))
                     return false;
@@ -2688,13 +2466,13 @@ inline void Quotient::zeno_unlock_range(int64_t start_region, int64_t end_region
 
 inline bool Quotient::zeno_lock_region_conditionally(int64_t lock_region_index, uint8_t runtime_lock) {
     // Read-lock of the spinlock array must be done before calling this method. 
-    if (lock_region_index <= runtimedata_->resizing_region.load(std::memory_order_acquire)) {
+    if (lock_region_index <= resizing_region.load(std::memory_order_acquire)) {
         if (!spin_lock_conditionally(&runtimedata_->locks[lock_region_index], lock_region_index, 
-                                     runtimedata_->resizing_region, runtime_lock)) {
+                                     resizing_region, runtime_lock)) {
             return false;
         }
     } else {
-        if (runtimedata_->resizing_region.load(std::memory_order_acquire) == -1 ||
+        if (resizing_region.load(std::memory_order_acquire) == -1 ||
             GET_SECOND_TRY_LOCK(runtime_lock)) {
             if (!spin_lock(&runtimedata_->locks[lock_region_index], runtime_lock)) {
                 return false;
@@ -2921,7 +2699,7 @@ inline int Quotient::zeno_lock_cluster(uint64_t index, uint64_t& runend, int64_t
         return kErrCouldntLock;
     }
 
-    if (runtimedata_->resizing_region.load(std::memory_order_acquire) >= 0 
+    if (resizing_region.load(std::memory_order_acquire) >= 0 
         && GET_SECOND_TRY_LOCK(flags) != kSecondTryLock 
         && clusterend_region - start_region >= 2) {
         zeno_unlock_range(start_region, clusterend_region);
@@ -2948,7 +2726,7 @@ inline int Quotient::zeno_lock_cluster(uint64_t index, uint64_t& runend, int64_t
         }
         clusterstart = clusterend + 1;
 
-        if (runtimedata_->resizing_region.load(std::memory_order_acquire) >= 0 
+        if (resizing_region.load(std::memory_order_acquire) >= 0 
             && GET_SECOND_TRY_LOCK(flags) != kSecondTryLock 
             && clusterend_region - start_region >= 2) {
             zeno_unlock_range(start_region, clusterend_region);
@@ -2963,7 +2741,7 @@ inline int Quotient::zeno_lock_cluster(uint64_t index, uint64_t& runend, int64_t
             return kErrCouldntLock;
         }
     }
-    if (runtimedata_->resizing_region.load(std::memory_order_acquire) >= 0 
+    if (resizing_region.load(std::memory_order_acquire) >= 0 
         && GET_SECOND_TRY_LOCK(flags) != kSecondTryLock 
         && clusterend_region - start_region >= 2) {
         zeno_unlock_range(start_region, clusterend_region);

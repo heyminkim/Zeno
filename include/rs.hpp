@@ -175,7 +175,7 @@ static inline uint64_t _select64(uint64_t x, int k)
  * Returns 64 if there are fewer than `rank` + 1 1s.
  */
 static inline uint64_t bitselect(uint64_t val, int rank) {
-#if defined(__x86_64__) && defined(__SSE4_2_)
+#if defined(__BMI2__)
     uint64_t tmp = 1ULL << rank;
     tmp = _pdep_u64(tmp, val);
     return __builtin_ia32_tzcnt_u64(tmp);

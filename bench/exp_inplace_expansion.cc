@@ -12,6 +12,7 @@
 #include "zenofilter_template.hpp"
 #include "zenofiltervm_template.hpp"
 #include "aleph_template.hpp"
+#include "infinifilter_template.hpp"
 
 #include "../util/cxxopts.hpp"
 
@@ -82,6 +83,7 @@ int main(int argc, char** argv) {
     if (r == 1) filter = new zeno_bench::ZenoFilter(qbits, qbits + fbits, 1);
     else if (r == 2) filter = new zeno_bench::ZenoFilterVM(qbits, qbits + fbits, 1);
     else if (r == 3) filter = new zeno_bench::Aleph(qbits, qbits + fbits);
+    else if (r == 4) filter = new zeno_bench::Aleph(qbits, qbits + fbits);
 
     file_query << label << ",";
     file_fpr << label << ",";

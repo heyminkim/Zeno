@@ -50,6 +50,18 @@ uint64_t generate_random_fast() {
     return rng();
 }
 
+const uint64_t string_rng_seed = 1000;
+static std::mt19937_64 string_rng(string_rng_seed);
+static inline void generate_random_string(uint8_t *str, uint32_t len) {
+    uint32_t i;
+    uint64_t *word_str = reinterpret_cast<uint64_t *>(str);
+    for (i = 0; i + 8 <= len; i += 8)
+        word_str[i / 8] = std::max<uint64_t>(string_rng(), 1ULL);
+    for (; i < len; i++)
+        str[i] = std::max<uint8_t>(string_rng() % 256, 1U);
+    str[len] = '\0';
+}
+
 uint64_t* read_vals(const std::string& filename, uint64_t& nvals) {
     std::ifstream in_file(filename, std::ios::binary);
     if (!in_file) {
@@ -90,6 +102,22 @@ void print_progress_bar(int current, int total, int bar_width = 50) {
     }
     std::cerr << "]" << int(progress * 100.0) << "%";
     std::cerr.flush();
+}
+
+std::vector<uint64_t> load_data(const std::string& filename) {
+    std::vector<uint64_t> data;
+    std::ifstream in(filename, std::ios::binary);
+    if (!in.is_open()) {
+        std::cerr << "unable to open " << filename << std::endl;
+        exit(EXIT_FAILURE);
+    }
+    uint64_t size;
+    in.read(reinterpret_cast<char*>(&size), sizeof(uint64_t));
+    data.resize(size);
+    in.read(reinterpret_cast<char*>(data.data()), size * sizeof(uint64_t));
+    in.close();
+    
+    return data;
 }
 
 }   // namespace util
