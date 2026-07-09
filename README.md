@@ -52,27 +52,45 @@ The core API provides standard filter operations:
 - `int32_t remove(uint64_t key, uint64_t value, uint64_t count, uint8_t flags)`: Removes up to `count` instances of this key/value combination. 
 - `uint64_t query(uint64_t key, uint64_t& value, uint8_t flags)`: Looks up the value associated with the key. Returns the count of that key/value pair in the filter.
 
-For a more detailed description of the APIs, please refer to the source code in `include/izf.hpp` and `include/vzf.hpp`. 
+For a more detailed description of the APIs, please refer to the source code in `include/zenofilter.hpp` and `include/zenofiltervm.hpp`. 
 
 ## Instructions
 
 ### Dependencies
 
-Zeno filter requires the following dependencies:
+The filter itself is header-only and requires a C++20 compiler. Building the benchmarks requires:
 
-- cmake 3.14 (or later)
+- cmake 3.19 (or later)
 - gcc-11 (or later)
-- OpenSSL 1.1.1f (or later)
+- OpenSSL 1.1.1f (or later, development headers)
+- OpenMP (ships with gcc as `libgomp`)
+- An x86-64 CPU. The benchmarks compile with `-march=native`; the Bamboo filter baseline
+  additionally requires AVX2/FMA support.
+
+Running the experiment scripts and generating the figures additionally requires:
+
+- Python 3 with `matplotlib` and `numpy`
+- `git`, `wget`, and `zstd` (used by experiment 8 to fetch WiredTiger and the SOSD datasets)
+- (Optional) The Times New Roman font for paper-identical figures; `plot.py` falls back to the default serif font when it is unavailable.
+
+On Ubuntu:
+
+```bash
+sudo apt install build-essential cmake git libssl-dev python3 python3-matplotlib python3-numpy wget zstd
+```
 
 ### Compilation
 
 The following commands will build Zeno filter along with the benchmarks and examples. 
 
 ```bash
-mkdir -p build & cd build
+mkdir -p build && cd build
 cmake .. -DCMAKE_BUILD_TYPE=Release
-make -j 8
+make -j 8 exp_fractional_expansion exp_spaceamp exp_inplace_expansion exp_widening \
+          exp_directory exp_contract exp_concurrency exp_concurrent_rw exp_overall
 ```
+
+Building the experiment targets by name (as above, or as done by the experiment scripts) is recommended over a plain `make -j 8`: the vendored LDCF baseline ships auxiliary test and benchmark targets that are not used by any experiment and do not compile.
 
 Alternately for the widening regime, you must set the flag like so:
 
@@ -117,6 +135,22 @@ We include scripts under the `scripts/` directory that reproduces all results in
 - `./scripts/exp7.sh`: Runs experiment 7, comparing Zeno filter against other baselines. 
 - `./scripts/exp8.sh`: Runs experiment 8 on the impact of filter size with WiredTiger. 
 
+Experiment 8 has additional requirements:
+
+- The WiredTiger sources must be present under `bench/wiredtiger` before running the script.
+  Fetch them with:
+
+  ```bash
+  git clone --depth 1 --branch 11.3.1 https://github.com/wiredtiger/wiredtiger.git bench/wiredtiger
+  ```
+
+  The build system compiles WiredTiger automatically the first time `exp8.sh` runs. Note that
+  WiredTiger's configure step additionally requires the Python 3 development headers and SWIG
+  (`python3-dev` and `swig` on Ubuntu).
+- The script downloads the SOSD `books` and `osm_cellids` datasets (~3.2 GB) into `data/` on the
+  first run, and the ingestion phase creates a WiredTiger database of roughly 50 GB under
+  `build/wt_database_home`. Make sure enough disk space is available.
+
 ### Results
 
 After running the experiments:
@@ -126,6 +160,30 @@ After running the experiments:
 - The plotting script `plot.py` generates figures in PDF.
 
 The generated PDFs will appear in the `results/` directory, with filenames matching the figures in the paper. 
+
+### Reproducing with Docker
+
+The provided `Dockerfile` packages the full build and experiment environment, including
+WiredTiger and the plotting toolchain. Build the image on the machine you want to measure,
+since the benchmarks compile with `-march=native`:
+
+```bash
+docker build -t zeno .
+```
+
+Run all experiments and collect the figures and raw CSVs on the host:
+
+```bash
+docker run --rm -v "$PWD/out:/zeno/results" zeno
+```
+
+Or run a subset of experiments:
+
+```bash
+docker run --rm -v "$PWD/out:/zeno/results" zeno exp2 exp6
+```
+
+To cache the experiment 8 datasets across container runs, add `-v zeno-data:/zeno/data`.
 
 
 ### Baselines

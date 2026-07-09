@@ -1,0 +1,8 @@
+.git
+build
+results
+data
+bench/wiredtiger
+wt_database_home
+plot_backup.py
+Dockerfile
