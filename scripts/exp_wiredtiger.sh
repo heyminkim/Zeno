@@ -73,7 +73,7 @@ for ID in 0 1 2 3; do
 
     progress_bar 0 $NREP
     for ((i=1; i<=NREP; i++)); do
-        time ${RUN} -q ${QBITS} -i ${ID} -f ${FPLEN} --fn_size ${FN_SIZE} --fn_insert ${FN_INSERT}
+        ${RUN} -q ${QBITS} -i ${ID} -f ${FPLEN} --fn_size ${FN_SIZE} --fn_insert ${FN_INSERT} -d 1
         progress_bar $i $NREP
     done
     progress_bar $NREP $NREP

@@ -23,7 +23,7 @@ def write_dataset(fn, data):
 
 
 def prepare_datasets(name):
-    fn_insert = f"{name}_insert_10M_uint64"
+    fn_insert = f"{name}_insert_100M_uint64"
     fn_query = f"{name}_query_500K_uint64"
 
     path_insert = os.path.join(DATA_DIR, fn_insert)
@@ -57,7 +57,7 @@ def prepare_datasets(name):
     np.random.shuffle(negatives)
 
     # write shuffled dataset
-    write_dataset(f"{name}_insert_10M_uint64", insert[:10_000_000])
+    write_dataset(f"{name}_insert_100M_uint64", insert[:100_000_000])
     write_dataset(f"{name}_query_500K_uint64", negatives[:500_000])
     
     

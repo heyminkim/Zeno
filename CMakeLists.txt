@@ -85,36 +85,11 @@ if(BUILD_WIREDTIGER)
     )
 
     set(WT_ROOT ${CMAKE_SOURCE_DIR}/bench/wiredtiger)
+    # pre-create include directory
+    file(MAKE_DIRECTORY ${WT_ROOT}/build/include)
     add_library(wiredtiger SHARED IMPORTED GLOBAL)
     set_target_properties(wiredtiger PROPERTIES
         IMPORTED_LOCATION ${WT_ROOT}/build/libwiredtiger.so
         INTERFACE_INCLUDE_DIRECTORIES ${WT_ROOT}/build/include
     )
 endif()
-
-
-# if(BUILD_WIREDTIGER)
-#     set(WT_ROOT ${CMAKE_SOURCE_DIR}/bench/wiredtiger)
-#     set(WT_LIB ${WT_ROOT}/build/libwiredtiger.so) 
-
-#     add_custom_command(
-#         OUTPUT ${WT_LIB}
-#         COMMAND bash ${CMAKE_SOURCE_DIR}/scripts/build_wiredtiger.sh
-#         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-#         COMMENT "Building WiredTiger (Generating libwiredtiger.so)"
-#         VERBATIM
-#     )
-
-#     add_custom_target(build_wiredtiger DEPENDS ${WT_LIB})
-
-#     add_library(wiredtiger SHARED IMPORTED GLOBAL)
-#     set_target_properties(wiredtiger PROPERTIES
-#         IMPORTED_LOCATION ${WT_LIB}
-#         INTERFACE_INCLUDE_DIRECTORIES ${WT_ROOT}/build/include
-#     )
-
-#     if(${CMAKE_VERSION} VERSION_GREATER_EQUAL "3.19.0") 
-#         add_dependencies(wiredtiger build_wiredtiger)
-#     endif()
-
-# endif()

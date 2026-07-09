@@ -39,8 +39,6 @@ static inline void error_check(int ret) {
 }
 
 static uint64_t compute_buffer_pool_size_mb(uint32_t n_keys, uint64_t filter_size) {
-    std::cout << "buff size   : " << (n_keys * (key_len + val_len) * memory_to_disk_ratio - filter_size) << "B" << std::endl;
-    std::cout << "filter size : " << filter_size << "B" << std::endl << std::endl;
     return std::max((n_keys * (key_len + val_len) * memory_to_disk_ratio - filter_size) / 1024.0 / 1024.0, 1.0);
 }
 
@@ -160,7 +158,7 @@ int main(int argc, char** argv) {
 
     // Prepare data
     std::string directory = "../data/";
-    std::string suffix = "_insert_10M_uint64";
+    std::string suffix = "_insert_100M_uint64";
     std::string datasets[2] = {
         "books",
         "osm_cellids"
@@ -191,8 +189,6 @@ int main(int argc, char** argv) {
     else if (id == 2) {
         filter = new zeno_bench::ZenoFilterVM(qbits, qbits + fbits, 1);
         filter->auto_resize(auto_resize);
-        verbose = true;
-        fractional = true;
     }
     else if (id == 3) {
         filter = new zeno_bench::Aleph(qbits, qbits + fbits);
@@ -286,24 +282,26 @@ int main(int argc, char** argv) {
 
             // This if statement is just for filtering out premature filter expansions
             if ((inserted * 2 >= next_sample) && is_period) {
-                interval = (double)(inserted - prev_interval);
-                prev_interval = inserted;
-                fraction = static_cast<double>(next_sample) / static_cast<double>(data_size);
-
-                current_buffer_pool_size_mb = 
-                        compute_buffer_pool_size_mb(data_size, // next_sample, 
+                current_buffer_pool_size_mb =
+                        compute_buffer_pool_size_mb(data_size, // next_sample,
                         filter ? (id == 3 ? filter->size() * 1.5 : filter->size()) : 0);
-                buffer_string += format_time(start_time, 
+                buffer_string += format_time(start_time,
                                  compute_buffer_pool_size_mb(data_size, 0));
                 restart_session(conn, session, cursor, current_buffer_pool_size_mb);
 
-                if (record_insert && insert_time != 0) {
-                    file_insert << fraction << "," << std::fixed << std::setprecision(12)
-                                << ((double)insert_time) / (interval * 1000.0 /*us*/) << ",";
-                    insert_time = 0;
-                }
+                if (filter == nullptr || next_sample < data_size) {
+                    interval = (double)(inserted - prev_interval);
+                    prev_interval = inserted;
+                    fraction = static_cast<double>(next_sample) / static_cast<double>(data_size);
 
-                next_sample *= 2;
+                    if (record_insert && insert_time != 0) {
+                        file_insert << fraction << "," << std::fixed << std::setprecision(12)
+                                    << ((double)insert_time) / (interval * 1000.0 /*us*/) << ",";
+                        insert_time = 0;
+                    }
+
+                    next_sample *= 2;
+                }
             }
             if (filter) {
                 insert_time += util::timing([&] {
@@ -316,6 +314,14 @@ int main(int argc, char** argv) {
             }
 
         }
+    }
+
+    // record the final interval
+    if (record_insert && insert_time != 0 && inserted > prev_interval) {
+        interval = (double)(inserted - prev_interval);
+        file_insert << 1.0 << "," << std::fixed << std::setprecision(12)
+                    << ((double)insert_time) / (interval * 1000.0 /*us*/) << ",";
+        insert_time = 0;
     }
 
     stop_measurement.store(true, std::memory_order_relaxed);
