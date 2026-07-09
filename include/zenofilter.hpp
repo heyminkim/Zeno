@@ -4177,18 +4177,19 @@ inline void ZenoFilter::set_slot(const uint64_t& index, const uint64_t& value) {
                   slots[(index % kSlotsPerBlock) * metadata_->bits_per_slot / 8]);
     // This results in undefined behavior:
     // uint64_t t = *p;
-    uint64_t t;
-    memcpy(&t, p, sizeof(t));
+    uint64_t t = 0;
+    int32_t shift = ((index % kSlotsPerBlock) * metadata_->bits_per_slot) % 8;
+    size_t nbytes = (shift + metadata_->bits_per_slot + 7) / 8;
+    memcpy(&t, p, nbytes);
     uint64_t mask = BITMASK(metadata_->bits_per_slot);
     uint64_t v = value;
-    int32_t shift = ((index % kSlotsPerBlock) * metadata_->bits_per_slot) % 8;
     mask <<= shift;
     v <<= shift;
     t &= ~mask;
     t |= v;
     // This results in undefined behavior:
     // *p = t;
-    memcpy(p, &t, sizeof(t));
+    memcpy(p, &t, nbytes);
 }
 
 inline uint64_t ZenoFilter::block_offset(const uint64_t& blockidx) const {
@@ -4500,6 +4501,13 @@ inline void ZenoFilter::shift_remainders(const uint64_t& start_index, const uint
 	const int bstart = (start_index * metadata_->bits_per_slot) % 64;
 
     assert(first_word <= last_word);
+    // If the shift range ends exactly on a word boundary, the last word holds
+    // no bits of the range and may lie in another lock region; skip the no-op
+    // read-modify-write so concurrent updates to it are not overwritten.
+    if (bend == 0 && last_word != first_word) {
+        --last_word;
+        bend = 64;
+    }
 	while (last_word != first_word) {
         *REMAINDER_WORD(last_word) = shift_into_b(*REMAINDER_WORD(last_word - 1),
                                                   *REMAINDER_WORD(last_word),
@@ -4533,10 +4541,14 @@ inline void ZenoFilter::shift_runends(int64_t first, uint64_t last, uint64_t dis
         // the bitmap that it shouldn't have touched. The issue came up when `distance > 1`, and is 
         // fixed now.
         const uint64_t first_runends_replacement = METADATA_WORD(runends, first) & (~BITMASK(bstart));
-        METADATA_WORD(runends, 64*last_word) = 
-            shift_into_b(last_word == first_word + 1 ? first_runends_replacement : 
-                         METADATA_WORD(runends, 64 * (last_word - 1)), 
-                         METADATA_WORD(runends, 64 * last_word), 0, bend, distance);
+        // Skip the last word when the range ends exactly on a word boundary;
+        // it holds no bits of the range and may lie in another lock region.
+        if (bend != 0) {
+            METADATA_WORD(runends, 64*last_word) =
+                shift_into_b(last_word == first_word + 1 ? first_runends_replacement :
+                             METADATA_WORD(runends, 64 * (last_word - 1)),
+                             METADATA_WORD(runends, 64 * last_word), 0, bend, distance);
+        }
         bend = 64;
         --last_word;
         while (last_word != first_word) {
