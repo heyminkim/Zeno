@@ -32,8 +32,6 @@ for FN in "$FN_INSERT" "$FN_QUERY"; do
     rm -f "$FN"
 done
 
-echo "onetwothreefour"
-
 # Build
 cmake .. -DCMAKE_BUILD_TYPE=Release -DFASTRESIZE=OFF
 make ${EXE} -j 8
@@ -61,8 +59,6 @@ done
 
 make clean
 
-echo "concurrency one"
-
 # Build
 for LS in 4096 65536; do
     cmake .. -DCMAKE_BUILD_TYPE=Release -DLOCKSLOTS=${LS} -DFASTRESIZE=ON
@@ -73,8 +69,6 @@ for LS in 4096 65536; do
         done
     done
 done
-
-echo "concurrency"
 
 QBITS=24
 FPLEN=16
