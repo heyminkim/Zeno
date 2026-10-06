@@ -348,7 +348,7 @@ def plot_size_over_time(ax, file, filename, letter):
         seen.add(label)
         data = [max(0.1, float(v)) for v in data_str]
         data = [v - data[0] for v in data]
-        x = [i * 0.1 for i in range(len(data))]
+        x = [i * 0.01 for i in range(len(data))]
         if "VZF" in label:
             target_len = len(data)
         # Extend prematurely ended lines with their last value.
