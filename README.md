@@ -150,6 +150,9 @@ Experiment 8 has additional requirements:
 - The script downloads the SOSD `books` and `osm_cellids` datasets (~3.2 GB) into `data/` on the
   first run, and the ingestion phase creates a WiredTiger database of roughly 50 GB under
   `build/wt_database_home`. Make sure enough disk space is available.
+- The experiment runs on the `books` dataset by default, as presented in the paper. To run it on
+  `osm_cellids` instead, set `DATASET=osm` (e.g. `DATASET=osm ./scripts/exp8.sh`, or
+  `docker run -e DATASET=osm ... zeno exp8`).
 
 ### Results
 
@@ -163,27 +166,40 @@ The generated PDFs will appear in the `results/` directory, with filenames match
 
 ### Reproducing with Docker
 
-The provided `Dockerfile` packages the full build and experiment environment, including
-WiredTiger and the plotting toolchain. Build the image on the machine you want to measure,
-since the benchmarks compile with `-march=native`:
+The provided `Dockerfile` and `compose.yaml` package the full build and experiment environment,
+including WiredTiger and the plotting toolchain. From a fresh clone, build the image and run every
+experiment with a single command. Build on the machine you want to measure, since the benchmarks
+compile with `-march=native`:
+
+```bash
+docker compose run --build --rm zeno
+```
+
+Figures (`*.pdf`) and raw data (`*.csv`) appear in `./out`, and the experiment 8 datasets are cached
+in the `zeno-data` volume across runs. To run a subset of experiments, list them:
+
+```bash
+docker compose run --build --rm zeno exp2 exp6
+```
+
+Without Compose, the equivalent is:
 
 ```bash
 docker build -t zeno .
+docker run --rm -v "$PWD/out:/zeno/results" -v zeno-data:/zeno/data zeno            # all
+docker run --rm -v "$PWD/out:/zeno/results" -v zeno-data:/zeno/data zeno exp2 exp6  # subset
 ```
 
-Run all experiments and collect the figures and raw CSVs on the host:
+Docker Desktop runs containers in a VM with its own memory limit (Settings -> Resources). 
+The experiments need roughly 4 GB of VM memory. 
+Experiment 8 also writes a ~50 GB WiredTiger database per filter configuration into the VM disk, which is a sparse image on the host (`Docker.raw`) that grows but does not shrink when files are deleted inside the VM. 
+If the host filesystem backing that image fills up, the VM silently stalls, so keep well over 100 GB free on that filesystem or run experiment 8 natively.
 
-```bash
-docker run --rm -v "$PWD/out:/zeno/results" zeno
-```
-
-Or run a subset of experiments:
-
-```bash
-docker run --rm -v "$PWD/out:/zeno/results" zeno exp2 exp6
-```
-
-To cache the experiment 8 datasets across container runs, add `-v zeno-data:/zeno/data`.
+We recommend running experiment 8 on the local machine rather than in Docker Desktop. The experiment
+measures the I/O stalls caused by a small WiredTiger cache, but inside the VM the database lives in
+`Docker.raw`, which the host's page cache can absorb; `direct_io` inside the VM then no longer reaches
+the device and the stalls largely disappear, muting the difference between the filters. Docker Engine
+on Linux (containers share the host kernel and disk) does not have this problem.
 
 
 ### Baselines

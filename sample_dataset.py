@@ -5,6 +5,7 @@ import os
 DATA_DIR = "data"
 QUERY_SIZE = 10_000_000
 NEG_FRACTIONS = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+CHUNK = 10_000_000
 
 def read_dataset(fn):
     path = os.path.join(DATA_DIR, fn)
@@ -22,6 +23,18 @@ def write_dataset(fn, data):
         data.tofile(f)
 
 
+def negatives_of(query_pool, insert):
+    sorted_insert = np.sort(insert)
+    parts = []
+    for i in range(0, len(query_pool), CHUNK):
+        chunk = query_pool[i:i + CHUNK]
+        pos = np.searchsorted(sorted_insert, chunk)
+        pos[pos == len(sorted_insert)] = 0
+        parts.append(chunk[sorted_insert[pos] != chunk])
+    del sorted_insert
+    return np.concatenate(parts)
+
+
 def prepare_datasets(name):
     fn_insert = f"{name}_insert_100M_uint64"
     fn_query = f"{name}_query_500K_uint64"
@@ -30,10 +43,10 @@ def prepare_datasets(name):
     path_query = os.path.join(DATA_DIR, fn_query)
 
     if os.path.exists(path_insert) and os.path.exists(path_query):
-        print(f"Skipping {name}: Output files already exist.")
+        print(f"Skipping {name}: Output files already exist.", flush=True)
         return
 
-    print(f"Processing {name}")
+    print(f"Processing {name}", flush=True)
 
     src = f"{name}_200M_uint64"
     data = read_dataset(src)
@@ -47,12 +60,12 @@ def prepare_datasets(name):
     assert len(query_pool) == 100_000_000
 
     # filter query pool to values not in insert set
-    print(f"  Filtering negatives...")
-    negatives = query_pool[~np.isin(query_pool, insert)]
+    print(f"  Filtering negatives...", flush=True)
+    negatives = negatives_of(query_pool, insert)
     assert len(negatives) >= QUERY_SIZE
 
     # shuffle arrays for random queries
-    print(f"  Shuffling pools...")
+    print(f"  Shuffling pools...", flush=True)
     np.random.shuffle(insert)
     np.random.shuffle(negatives)
 

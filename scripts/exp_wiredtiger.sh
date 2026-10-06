@@ -20,6 +20,14 @@ QBITS=8
 FPLEN=16
 NREP=1
 
+# Dataset: "books" or "osm". Override with e.g. DATASET=osm ./scripts/exp8.sh
+DATASET=${DATASET:-books}
+case "$DATASET" in
+    books) DATASET_ID=0 ;;
+    osm)   DATASET_ID=1 ;;
+    *) echo "Unknown DATASET '$DATASET' (expected books or osm)" >&2; exit 1 ;;
+esac
+
 STR_SIZE="exp_wiredtiger_size"
 STR_INSERT="exp_wiredtiger_insert"
 
@@ -73,7 +81,7 @@ for ID in 0 1 2 3; do
 
     progress_bar 0 $NREP
     for ((i=1; i<=NREP; i++)); do
-        ${RUN} -q ${QBITS} -i ${ID} -f ${FPLEN} --fn_size ${FN_SIZE} --fn_insert ${FN_INSERT} -d 1
+        ${RUN} -q ${QBITS} -i ${ID} -f ${FPLEN} --fn_size ${FN_SIZE} --fn_insert ${FN_INSERT} -d ${DATASET_ID}
         progress_bar $i $NREP
     done
     progress_bar $NREP $NREP

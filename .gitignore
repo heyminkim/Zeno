@@ -177,3 +177,6 @@ results/
 # ignore remote evaluation script
 copy.sh
 results.sh
+# docker output directory and python caches
+out/
+__pycache__/

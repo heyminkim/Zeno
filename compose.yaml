@@ -1,0 +1,14 @@
+# One-command reproduction: builds the image and runs every experiment, leaving figures
+# and raw CSVs in ./out and caching the experiment 8 datasets in the zeno-data volume.
+#   docker compose run --build --rm zeno              # all experiments
+#   docker compose run --build --rm zeno exp2 exp6    # a subset
+services:
+  zeno:
+    build: .
+    image: zeno
+    volumes:
+      - ./out:/zeno/results
+      - zeno-data:/zeno/data
+
+volumes:
+  zeno-data:

@@ -1,13 +1,14 @@
 # Reproduction environment for the Zeno Filter experiments.
 #
-# Build the image (on the machine you want to measure -- benchmarks compile with -march=native):
+# One command builds the image and runs everything (see compose.yaml); figures (PDF) and raw
+# data (CSV) land in ./out. Build on the machine you want to measure -- benchmarks compile with
+# -march=native:
+#   docker compose run --build --rm zeno              # all experiments
+#   docker compose run --build --rm zeno exp2 exp6    # a subset
+#
+# Without Compose:
 #   docker build -t zeno .
-#
-# Run all experiments and collect the figures (PDF) and raw data (CSV) on the host:
-#   docker run --rm -v "$PWD/out:/zeno/results" zeno
-#
-# Run a subset of experiments:
-#   docker run --rm -v "$PWD/out:/zeno/results" zeno exp2 exp6
+#   docker run --rm -v "$PWD/out:/zeno/results" -v zeno-data:/zeno/data zeno [exp2 exp6 ...]
 #
 # Notes:
 # - Running every experiment takes many hours; see scripts/ for the individual experiments.
@@ -21,11 +22,12 @@ ARG WIREDTIGER_VERSION=11.3.1
 ENV DEBIAN_FRONTEND=noninteractive
 
 # python3-dev and swig are required by WiredTiger's configure step.
+# bc and procps (ps) are used by the experiment scripts to sample the filter's RSS.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential cmake git ca-certificates \
         libssl-dev \
         python3 python3-dev python3-matplotlib python3-numpy \
-        swig wget zstd \
+        swig wget zstd bc procps \
     && rm -rf /var/lib/apt/lists/*
 
 # Times New Roman, used by plot.py for paper-identical figures. Best effort: if the
