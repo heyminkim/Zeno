@@ -137,22 +137,9 @@ We include scripts under the `scripts/` directory that reproduces all results in
 
 Experiment 8 has additional requirements:
 
-- The WiredTiger sources must be present under `bench/wiredtiger` before running the script.
-  Fetch them with:
-
-  ```bash
-  git clone --depth 1 --branch 11.3.1 https://github.com/wiredtiger/wiredtiger.git bench/wiredtiger
-  ```
-
-  The build system compiles WiredTiger automatically the first time `exp8.sh` runs. Note that
-  WiredTiger's configure step additionally requires the Python 3 development headers and SWIG
-  (`python3-dev` and `swig` on Ubuntu).
-- The script downloads the SOSD `books` and `osm_cellids` datasets (~3.2 GB) into `data/` on the
-  first run, and the ingestion phase creates a WiredTiger database of roughly 50 GB under
-  `build/wt_database_home`. Make sure enough disk space is available.
-- The experiment runs on the `books` dataset by default, as presented in the paper. To run it on
-  `osm_cellids` instead, set `DATASET=osm` (e.g. `DATASET=osm ./scripts/exp8.sh`, or
-  `docker run -e DATASET=osm ... zeno exp8`).
+- WiredTiger (release 11.3.1) is fetched into `bench/wiredtiger` and compiled automatically the first time `exp8.sh` runs. WiredTiger's configure step additionally requires the Python 3 development headers and SWIG (`python3-dev` and `swig` on Ubuntu).
+- The script downloads the SOSD `books` and `osm_cellids` datasets (~3.2 GB) into `data/` on the first run, and the ingestion phase creates a WiredTiger database of roughly 50 GB under `build/wt_database_home`. Make sure enough disk space is available.
+- The experiment runs on the `books` dataset by default, as presented in the paper. To run it on `osm_cellids` instead, set `DATASET=osm` (e.g. `DATASET=osm ./scripts/exp8.sh`, or `docker run -e DATASET=osm ... zeno exp8`).
 
 ### Results
 
