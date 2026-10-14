@@ -1,7 +1,8 @@
 #! /usr/bin/env bash
 
 # Experiment 7
-# Evaulation of Zeno against different baselines. 
+# Evaulation of Zeno against different baselines. Compares Zeno filter, Zeno filter-VM, 
+# Aleph filter, InfiniFilter, Bamboo filter, and LDCF. 
 
 EXE=exp_overall
 RUN=bench/${EXE}

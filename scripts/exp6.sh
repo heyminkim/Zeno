@@ -1,7 +1,8 @@
 #! /usr/bin/env bash
 
 # Experiment 6
-# Evaluation of Zeno filter for its multi-threaded performance with concurrent reads and writes
+# Evaluation of Zeno filter for its multi-threaded performance with concurrent reads and writes. 
+# Compares Zeno filter and RSQF. 
 
 EXE=exp_concurrent_rw
 RUN=bench/${EXE}
@@ -41,7 +42,7 @@ for ID in 1 2; do
 done
 
 # Concurrency within period
-QBITS=24
+QBITS=22
 FPLEN=16
 NEXP=0
 NREP=1
@@ -70,7 +71,7 @@ for LS in 4096 65536; do
     done
 done
 
-QBITS=24
+QBITS=22
 FPLEN=16
 NEXP=2
 NREP=1

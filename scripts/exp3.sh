@@ -1,7 +1,7 @@
 #! /usr/bin/env bash
 
 # Experiment 3
-# Evaulation of FPR with large r and widening. 
+# Evaulation of Zeno filter's FPR with large r and widening. 
 
 EXE=exp_widening
 RUN=bench/${EXE}
