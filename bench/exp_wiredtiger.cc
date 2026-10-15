@@ -282,9 +282,9 @@ int main(int argc, char** argv) {
 
             // This if statement is just for filtering out premature filter expansions
             if ((inserted * 2 >= next_sample) && is_period) {
+                uint64_t peak_filter_size = filter ? (id == 3 ? filter->size() * 3 : filter->size() * 2) : 0;
                 current_buffer_pool_size_mb =
-                        compute_buffer_pool_size_mb(data_size, // next_sample,
-                        filter ? (id == 3 ? filter->size() * 1.5 : filter->size()) : 0);
+                        compute_buffer_pool_size_mb(data_size, peak_filter_size);
                 buffer_string += format_time(start_time,
                                  compute_buffer_pool_size_mb(data_size, 0));
                 restart_session(conn, session, cursor, current_buffer_pool_size_mb);

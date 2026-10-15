@@ -180,3 +180,6 @@ results.sh
 # docker output directory and python caches
 out/
 __pycache__/
+
+# wiredtiger sources from benchmark
+bench/wiredtiger/
